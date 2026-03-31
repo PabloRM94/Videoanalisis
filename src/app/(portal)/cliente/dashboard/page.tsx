@@ -409,7 +409,7 @@ function WorkoutCard({
                 {idx + 1}
               </span>
               <div className="flex-1">
-                <span className="font-medium text-ocean-800">{tarea.nombre}</span>
+                <span className="font-medium text-ocean-800 whitespace-pre-wrap">{tarea.nombre}</span>
                 <span className="text-ocean-500"> - {tarea.objetivo} - {tarea.metros}m</span>
               </div>
             </div>
