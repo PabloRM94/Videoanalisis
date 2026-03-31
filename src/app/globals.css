@@ -157,6 +157,25 @@ body {
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
 }
 
+/* Inputs - asegurar contraste */
+input, textarea, select {
+  color: #0c4a6e;
+  background-color: white;
+  border: 1px solid #cbd5e1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  outline: none;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #94a3b8;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.1);
+}
+
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; }
