@@ -141,7 +141,7 @@ export default function Home() {
         <div className="absolute inset-0 bg-ocean-900/50" />
         <div className="absolute inset-0 flex items-center justify-center">
           <p className="text-white text-xl md:text-3xl font-bold text-center px-4">
-            "Cada entrenamiento te acerca a tu objetivo"
+            &quot;Cada entrenamiento te acerca a tu objetivo&quot;
           </p>
         </div>
       </div>
