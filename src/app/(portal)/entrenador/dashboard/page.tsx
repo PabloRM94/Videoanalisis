@@ -37,49 +37,46 @@ export default function EntrenadorDashboard() {
       if (!user) return;
 
       try {
-        // Fetch grupos
+        // Fetch grupos -TODOS los grupos (compartidos entre trainers)
         const gruposRef = collection(db, 'grupos');
-        const q = query(
-          gruposRef,
-          where('trainerId', '==', user.uid),
-          orderBy('nombre', 'asc')
-        );
-        const gruposSnap = await getDocs(q);
+        const gruposSnap = await getDocs(gruposRef);
         
         const gruposData: Grupo[] = [];
         for (const grupoDoc of gruposSnap.docs) {
           const grupoData = grupoDoc.data();
           
-          // Count clients in this group
-          const clientesRef = collection(db, 'users');
-          const clientesQ = query(
-            clientesRef,
-            where('grupoId', '==', grupoDoc.id)
-          );
-          const clientesSnap = await getDocs(clientesQ);
+          // Usar clienteIds del grupo si existe, sino contar desde users
+          let clienteCount = 0;
+          if (grupoData.clienteIds && Array.isArray(grupoData.clienteIds)) {
+            clienteCount = grupoData.clienteIds.length;
+          } else {
+            // Fallback: contar desde users
+            const clientesRef = collection(db, 'users');
+            const clientesQ = query(
+              clientesRef,
+              where('grupoId', '==', grupoDoc.id)
+            );
+            const clientesSnap = await getDocs(clientesQ);
+            clienteCount = clientesSnap.size;
+          }
           
           gruposData.push({
             id: grupoDoc.id,
             nombre: grupoData.nombre,
-            clienteCount: clientesSnap.size,
+            clienteCount,
           });
         }
         setGrupos(gruposData);
 
-        // Fetch tareas count
+        // Fetch tareas count -TODAS las tareas (compartidas)
         const tareasRef = collection(db, 'tareas');
-        const tareasQ = query(
-          tareasRef,
-          where('trainerId', '==', user.uid)
-        );
-        const tareasSnap = await getDocs(tareasQ);
+        const tareasSnap = await getDocs(tareasRef);
         setTareasCount(tareasSnap.size);
 
-        // Fetch workouts count and recent
+        // Fetch workouts count and recent -TODOS los workouts (compartidos)
         const workoutsRef = collection(db, 'workouts');
         const workoutsQ = query(
           workoutsRef,
-          where('trainerId', '==', user.uid),
           orderBy('fecha', 'desc')
         );
         const workoutsSnap = await getDocs(workoutsQ);

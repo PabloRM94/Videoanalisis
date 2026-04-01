@@ -17,7 +17,8 @@ import {
   limit,
   orderBy 
 } from 'firebase/firestore';
-import { Calendar, Plus, Search, Edit, Trash2, X, Send, FileText, Copy, LayoutGrid, List, GripVertical, ChevronUp, ChevronDown, XCircle, ChevronDown as ChevronIcon } from 'lucide-react';
+import { Calendar, Plus, Search, Edit, Trash2, X, Send, FileText, Copy, LayoutGrid, List, GripVertical, ChevronUp, ChevronDown, XCircle, ChevronDown as ChevronIcon, Loader2 } from 'lucide-react';
+import Link from 'next/link';
 
 interface Tarea {
   id: string;
@@ -41,11 +42,13 @@ interface Workout {
 interface Grupo {
   id: string;
   nombre: string;
+  clienteIds?: string[];
 }
 
 interface Asignacion {
   id: string;
   workoutId: string;
+  clienteId?: string;
   grupoId: string;
   fechaAsignada: string;
   estado: string;
@@ -115,9 +118,14 @@ export default function EntrenadorWorkoutsPage() {
     tareaIds: [] as string[],
   });
 
+  const [clientes, setClientes] = useState<{id: string; nombre: string; apellido: string; telefono?: string}[]>([]);
+  const [assignLoading, setAssignLoading] = useState(false);
+  
   const [assignData, setAssignData] = useState({
     grupoId: '',
+    clienteId: '',
     fecha: '',
+    includePdf: false,
   });
 
   // Estado para buscador de tareas en el modal
@@ -200,8 +208,21 @@ export default function EntrenadorWorkoutsPage() {
         const gruposData = gruposSnap.docs.map(doc => ({
           id: doc.id,
           nombre: doc.data().nombre,
+          clienteIds: doc.data().clienteIds || [],
         }));
         setGrupos(gruposData);
+
+        // Fetch clientes desde 'users' con role='cliente' (compartidos entre trainers)
+        const clientesRef = collection(db, 'users');
+        const clientesQ = query(clientesRef, where('role', '==', 'cliente'));
+        const clientesSnap = await getDocs(clientesQ);
+        const clientesData = clientesSnap.docs.map(docSnap => ({
+          id: docSnap.id,
+          nombre: docSnap.data().nombre || '',
+          apellido: docSnap.data().apellido || '',
+          telefono: docSnap.data().telefono || '',
+        }));
+        setClientes(clientesData);
 
         // Fetch workouts con límite y ordenados por fecha (más recientes primero)
         const workoutsRef = collection(db, 'workouts');
@@ -596,52 +617,140 @@ export default function EntrenadorWorkoutsPage() {
     setSelectedWorkout(workout);
     setAssignData({
       grupoId: '',
+      clienteId: '',
       fecha: new Date().toISOString().split('T')[0],
+      includePdf: false,
     });
     setShowAssignModal(true);
   };
 
+  const getClientesDelGrupo = (grupoId: string) => {
+    const grupo = grupos.find(g => g.id === grupoId);
+    if (!grupo || !grupo.clienteIds) return [];
+    return clientes.filter(c => (grupo.clienteIds as string[]).includes(c.id));
+  };
+
+  // Limpia y normaliza número de teléfono para wa.me
+  const formatPhone = (tel: string): string => {
+    const clean = tel.replace(/[\s\-().]/g, '');
+    if (!clean) return '';
+    if (clean.startsWith('+')) return clean;
+    if (clean.startsWith('00')) return '+' + clean.slice(2);
+    if (/^[6789]\d{8}$/.test(clean)) return '+34' + clean;
+    return clean;
+  };
+
+  // Construye el mensaje de WhatsApp para un cliente
+  const buildWhatsAppMessage = (nombreCliente: string, w: Workout): string => {
+    const fechaFormateada = new Date(assignData.fecha).toLocaleDateString('es-ES', {
+      weekday: 'long', day: 'numeric', month: 'long',
+    });
+    let msg =
+      `¡Hola ${nombreCliente}! 🏊 Tienes un nuevo entrenamiento asignado:\n\n` +
+      `*${w.titulo}*\n\n` +
+      `📅 Fecha: ${fechaFormateada}\n` +
+      `🎯 Objetivo: ${w.objetivo}\n` +
+      `📏 Metros: ${w.metros}m\n` +
+      `🎒 Material: ${w.material}`;
+
+    if (assignData.includePdf && (w as any).pdfUrl) {
+      msg += `\n\n📄 *Descarga tu entrenamiento en PDF:*\n${(w as any).pdfUrl}`;
+    }
+
+    msg += `\n\n_VideoAnalisis Natación — Pablo Rodríguez Madurga_`;
+    return msg;
+  };
+
   const assignWorkout = async () => {
-    if (!selectedWorkout || !assignData.grupoId || !assignData.fecha) return;
+    if (!selectedWorkout || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha) return;
 
+    setAssignLoading(true);
     try {
-      // Create assignment
       const asignacionesRef = collection(db, 'asignaciones');
-      const newAsignacion = await addDoc(asignacionesRef, {
-        workoutId: selectedWorkout.id,
-        grupoId: assignData.grupoId,
-        fechaAsignada: assignData.fecha,
-        estado: 'pendiente',
-        createdAt: serverTimestamp(),
-      });
 
-      setAsignaciones([...asignaciones, {
-        id: newAsignacion.id,
-        workoutId: selectedWorkout.id,
-        grupoId: assignData.grupoId,
-        fechaAsignada: assignData.fecha,
-        estado: 'pendiente',
-      }]);
+      // ── Cliente individual ─────────────────────────────────────────────────
+      if (assignData.clienteId) {
+        const newAsig = await addDoc(asignacionesRef, {
+          workoutId: selectedWorkout.id,
+          clienteId: assignData.clienteId,
+          grupoId: null,
+          fechaAsignada: assignData.fecha,
+          estado: 'pendiente',
+          createdAt: serverTimestamp(),
+        });
+        setAsignaciones(prev => [...prev, {
+          id: newAsig.id,
+          workoutId: selectedWorkout.id,
+          clienteId: assignData.clienteId,
+          grupoId: '',
+          fechaAsignada: assignData.fecha,
+          estado: 'pendiente',
+        }]);
 
-      // Generate WhatsApp link
-      const grupo = grupos.find(g => g.id === assignData.grupoId);
-      const whatsappMessage = encodeURIComponent(
-        `¡Hola!Tienes un nuevo workout asignado: *${selectedWorkout.titulo}*\n\n` +
-        `📅 Fecha: ${new Date(assignData.fecha).toLocaleDateString('es-ES')}\n` +
-        `🎯 Objetivo: ${selectedWorkout.objetivo}\n` +
-        `🏊 Metros: ${selectedWorkout.metros}m\n\n` +
-        `Revisa los detalles en la app y programa tu entrenamiento.`
-      );
-      
-      const whatsappUrl = `https://wa.me/?text=${whatsappMessage}`;
-      
-      // Open WhatsApp
-      window.open(whatsappUrl, '_blank');
+        const cliente = clientes.find(c => c.id === assignData.clienteId);
+        const nombre = cliente ? `${cliente.nombre} ${cliente.apellido}` : 'Nadador/a';
+        const msg = buildWhatsAppMessage(nombre, selectedWorkout);
+        const tel = formatPhone(cliente?.telefono || '');
+        const waUrl = tel
+          ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
+          : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+        window.open(waUrl, '_blank');
+      }
+
+      // ── Grupo completo ─────────────────────────────────────────────────────
+      else if (assignData.grupoId) {
+        const clientesDelGrupo = getClientesDelGrupo(assignData.grupoId);
+
+        for (const cliente of clientesDelGrupo) {
+          const newAsig = await addDoc(asignacionesRef, {
+            workoutId: selectedWorkout.id,
+            clienteId: cliente.id,
+            grupoId: assignData.grupoId,
+            fechaAsignada: assignData.fecha,
+            estado: 'pendiente',
+            createdAt: serverTimestamp(),
+          });
+          setAsignaciones(prev => [...prev, {
+            id: newAsig.id,
+            workoutId: selectedWorkout.id,
+            clienteId: cliente.id,
+            grupoId: assignData.grupoId,
+            fechaAsignada: assignData.fecha,
+            estado: 'pendiente',
+          }]);
+        }
+
+        const clientesConTel = clientesDelGrupo.filter(c => c.telefono?.trim());
+        const clientesSinTel  = clientesDelGrupo.filter(c => !c.telefono?.trim());
+        const grupo = grupos.find(g => g.id === assignData.grupoId);
+
+        if (clientesConTel.length === 0) {
+          const msg = buildWhatsAppMessage(grupo?.nombre || 'grupo', selectedWorkout);
+          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+        } else {
+          clientesConTel.forEach((cliente, idx) => {
+            const nombre = `${cliente.nombre} ${cliente.apellido}`;
+            const msg = buildWhatsAppMessage(nombre, selectedWorkout);
+            const tel = formatPhone(cliente.telefono!);
+            setTimeout(() => {
+              window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank');
+            }, idx * 600);
+          });
+
+          if (clientesSinTel.length > 0) {
+            const nombres = clientesSinTel.map(c => `${c.nombre} ${c.apellido}`).join(', ');
+            alert(`⚠️ Sin teléfono (no recibirán WhatsApp):\n${nombres}`);
+          }
+        }
+      }
 
       setShowAssignModal(false);
       setSelectedWorkout(null);
+      setAssignData({ grupoId: '', clienteId: '', fecha: new Date().toISOString().split('T')[0], includePdf: false });
     } catch (error) {
       console.error('Error assigning workout:', error);
+    } finally {
+      setAssignLoading(false);
     }
   };
 
@@ -701,16 +810,13 @@ export default function EntrenadorWorkoutsPage() {
           <h1 className="text-2xl font-bold text-ocean-800">Workouts</h1>
           <p className="text-ocean-600">Crea y asigna entrenamientos</p>
         </div>
-        <button
-          onClick={() => {
-            setFormData({ titulo: '', objetivo: '', material: '', tareaIds: [] });
-            setShowCreateModal(true);
-          }}
+        <Link
+          href="/entrenador/workouts/nuevo"
           className="flex items-center gap-2 px-4 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
         >
           <Plus className="w-4 h-4" />
           Nuevo Workout
-        </button>
+        </Link>
       </div>
 
       {/* Search */}
@@ -803,13 +909,13 @@ export default function EntrenadorWorkoutsPage() {
           <p className="text-ocean-500 mb-4">
             Crea tu primer workout para asignarlo a tus clientes
           </p>
-          <button
-            onClick={() => setShowCreateModal(true)}
+          <Link
+            href="/entrenador/workouts/nuevo"
             className="inline-flex items-center gap-2 px-4 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
           >
             <Plus className="w-4 h-4" />
             Crear Workout
-          </button>
+          </Link>
         </div>
       ) : (
         <div className="space-y-4">
@@ -837,27 +943,13 @@ export default function EntrenadorWorkoutsPage() {
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => {
-                        setEditingWorkout(workout);
-                        setFormData({
-                          titulo: workout.titulo,
-                          objetivo: workout.objetivo,
-                          material: workout.material,
-                          tareaIds: workout.tareaIds,
-                        });
-                        // Limpiar filtros de tareas
-                        setTaskSearch('');
-                        setTaskFiltroObjetivo('');
-                        setTaskFiltroMaterial('');
-                        setTaskFiltroMetros('');
-                        setShowCreateModal(true);
-                      }}
+                    <Link
+                      href={`/entrenador/workouts/${workout.id}/editar`}
                       className="flex items-center gap-2 px-3 py-2 bg-ocean-100 text-ocean-700 rounded-lg hover:bg-ocean-200 text-sm"
                     >
                       <Edit className="w-4 h-4" />
                       Editar
-                    </button>
+                    </Link>
                     <button
                       onClick={() => openAssign(workout)}
                       className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm"
@@ -1349,63 +1441,133 @@ export default function EntrenadorWorkoutsPage() {
       {/* Assign Modal */}
       {showAssignModal && selectedWorkout && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-ocean-800">Asignar Workout</h2>
-              <button
-                onClick={() => setShowAssignModal(false)}
-                className="p-2 text-ocean-400 hover:text-ocean-600"
-              >
+          <div className="bg-white rounded-xl p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-ocean-800">Asignar Workout</h2>
+                <p className="text-sm text-ocean-500 mt-0.5">{selectedWorkout.titulo} · {selectedWorkout.metros}m · {selectedWorkout.objetivo}</p>
+              </div>
+              <button onClick={() => setShowAssignModal(false)} className="p-2 text-ocean-400 hover:text-ocean-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-ocean-700 mb-2">
-                  Workout
-                </label>
-                <p className="text-ocean-800 font-medium">{selectedWorkout.titulo}</p>
-                <p className="text-sm text-ocean-500">{selectedWorkout.metros}m • {selectedWorkout.objetivo}</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-ocean-700 mb-2">
-                  Grupo *
-                </label>
-                <select
-                  value={assignData.grupoId}
-                  onChange={(e) => setAssignData({ ...assignData, grupoId: e.target.value })}
-                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-                >
-                  <option value="">Seleccionar grupo</option>
-                  {grupos.map((grupo) => (
-                    <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-ocean-700 mb-2">
-                  Fecha *
-                </label>
-                <input
-                  type="date"
-                  value={assignData.fecha}
-                  onChange={(e) => setAssignData({ ...assignData, fecha: e.target.value })}
-                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-                />
-              </div>
-
-              <button
-                onClick={assignWorkout}
-                disabled={!assignData.grupoId || !assignData.fecha}
-                className="w-full flex items-center justify-center gap-2 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50"
+            {/* Grupo */}
+            <div>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Grupo</label>
+              <select
+                value={assignData.grupoId}
+                onChange={(e) => setAssignData({ ...assignData, grupoId: e.target.value, clienteId: '' })}
+                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
               >
-                <Send className="w-4 h-4" />
-                Asignar y Enviar por WhatsApp
-              </button>
+                <option value="">Seleccionar grupo...</option>
+                {grupos.map((g) => {
+                  const n = getClientesDelGrupo(g.id).length;
+                  const conTel = getClientesDelGrupo(g.id).filter(c => c.telefono?.trim()).length;
+                  return (
+                    <option key={g.id} value={g.id}>
+                      {g.nombre} ({n} cliente{n !== 1 ? 's' : ''}, {conTel} con teléfono)
+                    </option>
+                  );
+                })}
+              </select>
+              {assignData.grupoId && (
+                <div className="mt-2 max-h-32 overflow-y-auto space-y-1">
+                  {getClientesDelGrupo(assignData.grupoId).map(c => (
+                    <div key={c.id} className="flex items-center justify-between text-xs bg-ocean-50 rounded px-2 py-1">
+                      <span className="text-ocean-700 font-medium">{c.nombre} {c.apellido}</span>
+                      {c.telefono?.trim() ? (
+                        <span className="text-green-600">📱 {c.telefono}</span>
+                      ) : (
+                        <span className="text-red-400">Sin teléfono</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
+
+            <div className="flex items-center gap-2 text-ocean-400 text-xs">
+              <div className="flex-1 h-px bg-ocean-100" /><span>o</span><div className="flex-1 h-px bg-ocean-100" />
+            </div>
+
+            {/* Cliente específico */}
+            <div>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Cliente específico</label>
+              <select
+                value={assignData.clienteId}
+                onChange={(e) => setAssignData({ ...assignData, clienteId: e.target.value, grupoId: '' })}
+                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              >
+                <option value="">Seleccionar cliente...</option>
+                {clientes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nombre} {c.apellido}{c.telefono ? ` — ${c.telefono}` : ' — sin teléfono'}
+                  </option>
+                ))}
+              </select>
+              {assignData.clienteId && (() => {
+                const sel = clientes.find(c => c.id === assignData.clienteId);
+                return sel ? (
+                  <div className={`mt-2 flex items-center gap-2 text-xs rounded-lg px-3 py-2 ${sel.telefono?.trim() ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+                    {sel.telefono?.trim()
+                      ? <>📱 WhatsApp enviado a <strong>{formatPhone(sel.telefono)}</strong></>
+                      : <>⚠️ Sin teléfono — se abrirá WhatsApp Web sin destinatario</>}
+                  </div>
+                ) : null;
+              })()}
+            </div>
+
+            {/* Fecha */}
+            <div>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Fecha del entrenamiento</label>
+              <input
+                type="date"
+                value={assignData.fecha}
+                onChange={(e) => setAssignData({ ...assignData, fecha: e.target.value })}
+                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              />
+            </div>
+
+            {/* PDF */}
+            <div className={`rounded-lg border p-3 ${assignData.includePdf ? 'border-ocean-300 bg-ocean-50' : 'border-ocean-100 bg-gray-50'}`}>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={assignData.includePdf}
+                  onChange={(e) => setAssignData({ ...assignData, includePdf: e.target.checked })}
+                  className="w-4 h-4 rounded border-ocean-300 text-ocean-600"
+                />
+                <div>
+                  <p className="text-sm font-medium text-ocean-700">Incluir enlace de descarga del PDF</p>
+                  <p className="text-xs text-ocean-500 mt-0.5">
+                    {(selectedWorkout as any)?.pdfUrl
+                      ? 'Se adjuntará el enlace en el mensaje de WhatsApp'
+                      : 'Este workout no tiene PDF — edítalo y guárdalo primero'}
+                  </p>
+                </div>
+              </label>
+              {assignData.includePdf && (selectedWorkout as any)?.pdfUrl && (
+                <div className="mt-2 text-xs text-ocean-500 bg-white rounded px-2 py-1 border border-ocean-200 truncate">
+                  🔗 {(selectedWorkout as any).pdfUrl}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={assignWorkout}
+              disabled={assignLoading || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium"
+            >
+              {assignLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {assignLoading ? 'Asignando...' : 'Asignar y enviar por WhatsApp'}
+            </button>
+
+            {assignData.grupoId && getClientesDelGrupo(assignData.grupoId).filter(c => c.telefono?.trim()).length > 1 && (
+              <p className="text-xs text-center text-ocean-400">
+                Se abrirá una ventana por cada cliente con teléfono. Permite ventanas emergentes en tu navegador.
+              </p>
+            )}
           </div>
         </div>
       )}
