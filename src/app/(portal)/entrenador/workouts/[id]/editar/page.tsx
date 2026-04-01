@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { db, storage } from '@/config/firebase';
 import { doc, getDoc, updateDoc, collection, getDocs, addDoc, query, where } from 'firebase/firestore';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
-import { ArrowLeft, Save, Loader2, ChevronUp, ChevronDown, Send, X, Edit, FileText, GripVertical, Eye, ChevronDown as ChevronIcon, LayoutGrid, List, XCircle, Copy, FileDown } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, ChevronUp, ChevronDown, Send, X, Edit, Eye, FileDown, Plus } from 'lucide-react';
 import { generateWorkoutPDF } from '@/lib/generateWorkoutPDF';
 
 // Tipos
@@ -64,11 +64,15 @@ export default function EditarWorkoutPage() {
   const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [saving, setSaving] = useState(false);
-  const [isNew] = useState(isNewMode);
+
+  // Estado para nuevo workout guardado (para habilitar Asignar en modo nuevo)
+  const [savedWorkoutId, setSavedWorkoutId] = useState<string | null>(null);
+  const [savedWorkoutData, setSavedWorkoutData] = useState<Workout | null>(null);
 
   // Estados para modales
   const [showAssignModal, setShowAssignModal] = useState(false);
-  const [showEditTareaModal, setShowEditTareaModal] = useState(false);
+  const [showTareaModal, setShowTareaModal] = useState(false);
+  const [isCreatingNewTarea, setIsCreatingNewTarea] = useState(false);
   const [editingTareaInWorkout, setEditingTareaInWorkout] = useState<Tarea | null>(null);
   const [tareaFormData, setTareaFormData] = useState({
     nombre: '',
@@ -92,16 +96,6 @@ export default function EditarWorkoutPage() {
   const [taskFiltroObjetivo, setTaskFiltroObjetivo] = useState('');
   const [taskFiltroMaterial, setTaskFiltroMaterial] = useState('');
   const [taskFiltroMetros, setTaskFiltroMetros] = useState('');
-
-  // Estados para secciones colapsables
-  const [openSections, setOpenSections] = useState({
-    info: true,
-    selectedTareas: true,
-    tareasBanco: true,
-  });
-
-  // Vista de tareas (grid/table)
-  const [tareasViewMode, setTareasViewMode] = useState<'grid' | 'table'>('table');
 
   // Estado para previsualización PDF
   const [showPdfPreview, setShowPdfPreview] = useState(false);
@@ -127,26 +121,16 @@ export default function EditarWorkoutPage() {
       }
 
       try {
-        // Si es modo nuevo, no cargar workout existente
         if (isNewMode) {
           setWorkout(null);
-          setFormData({
-            titulo: '',
-            objetivo: '',
-            material: '',
-            tareaIds: [],
-            comentarios: '',
-          });
+          setFormData({ titulo: '', objetivo: '', material: '', tareaIds: [], comentarios: '' });
         } else {
-          // Fetch workout existente
           const workoutDoc = await getDoc(doc(db, 'workouts', workoutId));
-          
           if (!workoutDoc.exists()) {
             setError('Workout no encontrado');
             setLoading(false);
             return;
           }
-
           const workoutData = { id: workoutDoc.id, ...workoutDoc.data() } as Workout;
           setWorkout(workoutData);
           setFormData({
@@ -158,36 +142,23 @@ export default function EditarWorkoutPage() {
           });
         }
 
-        // Fetch todas las tareas disponibles
-        const tareasRef = collection(db, 'tareas');
-        const tareasSnap = await getDocs(tareasRef);
-        const tareasData = tareasSnap.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Tarea[];
-        setTareas(tareasData);
+        const tareasSnap = await getDocs(collection(db, 'tareas'));
+        setTareas(tareasSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Tarea[]);
 
-        // Fetch grupos
-        const gruposRef = collection(db, 'grupos');
-        const gruposSnap = await getDocs(gruposRef);
-        const gruposData = gruposSnap.docs.map(doc => ({
-          id: doc.id,
-          nombre: doc.data().nombre,
-          clienteIds: doc.data().clienteIds || [],
-        })) as Grupo[];
-        setGrupos(gruposData);
+        const gruposSnap = await getDocs(collection(db, 'grupos'));
+        setGrupos(gruposSnap.docs.map(d => ({
+          id: d.id,
+          nombre: d.data().nombre,
+          clienteIds: d.data().clienteIds || [],
+        })) as Grupo[]);
 
-        // Fetch clientes (desde 'users' con role='cliente', compartidos entre trainers)
-        const clientesRef = collection(db, 'users');
-        const clientesQ = query(clientesRef, where('role', '==', 'cliente'));
-        const clientesSnap = await getDocs(clientesQ);
-        const clientesData = clientesSnap.docs.map(docSnap => ({
-          id: docSnap.id,
-          nombre: docSnap.data().nombre || '',
-          apellido: docSnap.data().apellido || '',
-          telefono: docSnap.data().telefono || '',
-        })) as Cliente[];
-        setClientes(clientesData);
+        const clientesSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'cliente')));
+        setClientes(clientesSnap.docs.map(d => ({
+          id: d.id,
+          nombre: d.data().nombre || '',
+          apellido: d.data().apellido || '',
+          telefono: d.data().telefono || '',
+        })) as Cliente[]);
 
         setLoading(false);
       } catch (err) {
@@ -200,103 +171,151 @@ export default function EditarWorkoutPage() {
     fetchData();
   }, [workoutId, isNewMode]);
 
-  // Sistema de recomendaciones
+  // Sistema de recomendaciones + filtros (incluyendo metros)
   const getFilteredAndSortedTareas = () => {
     const grupo1 = ['CLNT', 'TEC', 'INI'];
     const grupo2 = ['VEL', 'FUER', 'ANA', 'PAL', 'PLAC', 'CAL', 'CLAC'];
     const grupo3 = ['AEL', 'AEM', 'AEI'];
 
-    const selectedTareas = tareas.filter(t => formData.tareaIds.includes(t.id));
-    const currentMainObjective = selectedTareas.length > 0 
-      ? calculateObjective(formData.tareaIds) 
+    const currentMainObjective = formData.tareaIds.length > 0
+      ? calculateObjective(formData.tareaIds)
       : null;
 
     let recommendedObjectives: string[] = [];
-    
     if (currentMainObjective) {
-      if (grupo1.includes(currentMainObjective)) {
-        recommendedObjectives = [...grupo2];
-      } else if (grupo2.includes(currentMainObjective)) {
-        recommendedObjectives = [...grupo3];
-      } else if (grupo3.includes(currentMainObjective)) {
-        recommendedObjectives = [...grupo3];
-      } else {
-        recommendedObjectives = [...grupo1];
-      }
+      if (grupo1.includes(currentMainObjective)) recommendedObjectives = [...grupo2];
+      else if (grupo2.includes(currentMainObjective)) recommendedObjectives = [...grupo3];
+      else if (grupo3.includes(currentMainObjective)) recommendedObjectives = [...grupo3];
+      else recommendedObjectives = [...grupo1];
     } else {
       recommendedObjectives = [...grupo1];
     }
 
-    // Filtrar tareas
     const filtered = tareas.filter(t => {
       const objetivosArray = Array.isArray(t.objetivo) ? t.objetivo : [t.objetivo].filter(Boolean);
-      const matchSearch = 
-        !taskSearch || 
+      const matchSearch =
+        !taskSearch ||
         t.nombre.toLowerCase().includes(taskSearch.toLowerCase()) ||
         objetivosArray.some(o => o.toLowerCase().includes(taskSearch.toLowerCase()));
       const matchObjetivo = !taskFiltroObjetivo || objetivosArray.includes(taskFiltroObjetivo);
       const matchMaterial = !taskFiltroMaterial || t.material === taskFiltroMaterial;
+      // Issue #2: filtro de metros (mínimo de metros)
+      const matchMetros = !taskFiltroMetros || t.metros >= parseInt(taskFiltroMetros);
 
-      return matchSearch && matchObjetivo && matchMaterial;
+      return matchSearch && matchObjetivo && matchMaterial && matchMetros;
     });
 
-    // Ordenar: recomendadas primero
     const sorted = [...filtered].sort((a, b) => {
       const aObj = Array.isArray(a.objetivo) ? a.objetivo : [a.objetivo].filter(Boolean);
       const bObj = Array.isArray(b.objetivo) ? b.objetivo : [b.objetivo].filter(Boolean);
-      
-      const aIsRecommended = aObj.some(o => recommendedObjectives.includes(o));
-      const bIsRecommended = bObj.some(o => recommendedObjectives.includes(o));
-      
-      if (aIsRecommended && !bIsRecommended) return -1;
-      if (!aIsRecommended && bIsRecommended) return 1;
+      const aR = aObj.some(o => recommendedObjectives.includes(o));
+      const bR = bObj.some(o => recommendedObjectives.includes(o));
+      if (aR && !bR) return -1;
+      if (!aR && bR) return 1;
       return 0;
     });
 
     return { sorted, recommendedObjectives };
   };
 
-  // Funciones auxiliares
   const calculateObjective = (tareaIds: string[]): string => {
-    const selectedTareas = tareas.filter(t => tareaIds.includes(t.id));
-    const objetivosArrays = selectedTareas
-      .filter(t => t.objetivo)
-      .map(t => Array.isArray(t.objetivo) ? t.objetivo : [t.objetivo]);
-    
-    if (objetivosArrays.length === 0) return 'General';
-    
-    const objetivos = objetivosArrays.flat();
+    const sel = tareas.filter(t => tareaIds.includes(t.id));
+    const all = sel.flatMap(t => Array.isArray(t.objetivo) ? t.objetivo : [t.objetivo]).filter(Boolean);
+    if (!all.length) return 'General';
     const counts: Record<string, number> = {};
-    objetivos.forEach(o => counts[o] = (counts[o] || 0) + 1);
+    all.forEach(o => { counts[o] = (counts[o] || 0) + 1; });
     return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'General';
   };
 
-  const calculateMetros = (tareaIds: string[]): number => {
-    return tareas.filter(t => tareaIds.includes(t.id)).reduce((acc, t) => acc + t.metros, 0);
-  };
+  const calculateMetros = (tareaIds: string[]): number =>
+    tareas.filter(t => tareaIds.includes(t.id)).reduce((acc, t) => acc + t.metros, 0);
 
-  // Material: únicos de las tareas, concatenados con coma
   const calculateMaterial = (tareaIds: string[]): string => {
-    const materiales = tareas
-      .filter(t => tareaIds.includes(t.id) && t.material)
-      .map(t => t.material);
-    return [...new Set(materiales)].join(', ') || 'Sin material';
+    const mats = tareas.filter(t => tareaIds.includes(t.id) && t.material).map(t => t.material);
+    return [...new Set(mats)].join(', ') || 'Sin material';
   };
 
-  // Toggle secciones
-  const toggleSection = (section: 'info' | 'selectedTareas' | 'tareasBanco') => {
-    setOpenSections(prev => ({ ...prev, [section]: !prev[section] }));
+  const moveTareaUp = (index: number) => {
+    if (index === 0) return;
+    const ids = [...formData.tareaIds];
+    [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
+    setFormData({ ...formData, tareaIds: ids });
   };
 
-  // Obtener tareas seleccionadas ordenadas
-  const getSelectedTareas = () => {
-    return formData.tareaIds.map(id => tareas.find(t => t.id === id)).filter(Boolean) as Tarea[];
+  const moveTareaDown = (index: number) => {
+    if (index === formData.tareaIds.length - 1) return;
+    const ids = [...formData.tareaIds];
+    [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
+    setFormData({ ...formData, tareaIds: ids });
   };
 
-  // Remover tarea del workout
-  const removeTareaFromWorkout = (tareaId: string) => {
-    const newTareaIds = formData.tareaIds.filter(id => id !== tareaId);
-    setFormData({ ...formData, tareaIds: newTareaIds });
+  const toggleTarea = (tareaId: string) => {
+    const newIds = formData.tareaIds.includes(tareaId)
+      ? formData.tareaIds.filter(id => id !== tareaId)
+      : [...formData.tareaIds, tareaId];
+    setFormData({ ...formData, tareaIds: newIds });
+  };
+
+  // Issue #3: Abrir modal para EDITAR tarea existente
+  const openEditTareaModal = (tarea: Tarea) => {
+    setIsCreatingNewTarea(false);
+    setEditingTareaInWorkout(tarea);
+    setTareaFormData({
+      nombre: tarea.nombre,
+      objetivo: Array.isArray(tarea.objetivo) ? tarea.objetivo : [tarea.objetivo],
+      material: tarea.material,
+      metros: tarea.metros.toString(),
+      descripcion: tarea.descripcion || '',
+    });
+    setShowTareaModal(true);
+  };
+
+  // Issue #3: Abrir modal para CREAR nueva tarea
+  const openNewTareaModal = () => {
+    setIsCreatingNewTarea(true);
+    setEditingTareaInWorkout(null);
+    setTareaFormData({ nombre: '', objetivo: [], material: '', metros: '', descripcion: '' });
+    setShowTareaModal(true);
+  };
+
+  // Issue #3: Guardar tarea (crear nueva o editar existente)
+  const handleSaveTarea = async () => {
+    if (isCreatingNewTarea) {
+      // Crear nueva tarea en el banco y añadirla al workout
+      try {
+        const newTareaRef = await addDoc(collection(db, 'tareas'), {
+          nombre: tareaFormData.nombre,
+          objetivo: tareaFormData.objetivo,
+          material: tareaFormData.material,
+          metros: parseInt(tareaFormData.metros) || 0,
+          descripcion: tareaFormData.descripcion,
+        });
+        const newTarea: Tarea = {
+          id: newTareaRef.id,
+          nombre: tareaFormData.nombre,
+          objetivo: tareaFormData.objetivo,
+          material: tareaFormData.material,
+          metros: parseInt(tareaFormData.metros) || 0,
+          descripcion: tareaFormData.descripcion,
+        };
+        setTareas(prev => [...prev, newTarea]);
+        setFormData(prev => ({ ...prev, tareaIds: [...prev.tareaIds, newTareaRef.id] }));
+      } catch (err) {
+        console.error('Error creando tarea:', err);
+        alert('Error al crear la tarea');
+        return;
+      }
+    } else {
+      // Editar tarea existente solo en local (afecta este workout)
+      if (!editingTareaInWorkout) return;
+      setTareas(prev => prev.map(t =>
+        t.id === editingTareaInWorkout.id
+          ? { ...t, nombre: tareaFormData.nombre, objetivo: tareaFormData.objetivo, material: tareaFormData.material, metros: parseInt(tareaFormData.metros) || 0, descripcion: tareaFormData.descripcion }
+          : t
+      ));
+    }
+    setShowTareaModal(false);
+    setEditingTareaInWorkout(null);
   };
 
   // Previsualizar PDF
@@ -305,23 +324,17 @@ export default function EditarWorkoutPage() {
       alert('Agrega un título y tareas para previsualizar el PDF');
       return;
     }
-
     setGeneratingPdf(true);
     try {
-      const selectedTareas = tareas.filter(t => formData.tareaIds.includes(t.id));
-      const totalMetros = calculateMetros(formData.tareaIds);
-      const objetivoCalculado = calculateObjective(formData.tareaIds);
-      const materialCalculado = calculateMaterial(formData.tareaIds);
-
-      // Revocar URL anterior si existe
+      // Preservar orden de tareaIds (issue #6)
+      const selTareas = formData.tareaIds.map(id => tareas.find(t => t.id === id)).filter(Boolean) as Tarea[];
       if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
-
       const blobUrl = await generateWorkoutPDF(
         { titulo: formData.titulo, comentarios: formData.comentarios },
-        selectedTareas,
-        objetivoCalculado,
-        materialCalculado,
-        totalMetros,
+        selTareas,
+        calculateObjective(formData.tareaIds),
+        calculateMaterial(formData.tareaIds),
+        calculateMetros(formData.tareaIds),
       );
       setPdfPreviewUrl(blobUrl);
       setShowPdfPreview(true);
@@ -333,77 +346,21 @@ export default function EditarWorkoutPage() {
     }
   };
 
-  // Reordenación
-  const moveTareaUp = (index: number) => {
-    if (index === 0) return;
-    const newTareaIds = [...formData.tareaIds];
-    [newTareaIds[index - 1], newTareaIds[index]] = [newTareaIds[index], newTareaIds[index - 1]];
-    setFormData({ ...formData, tareaIds: newTareaIds });
-  };
-
-  const moveTareaDown = (index: number) => {
-    if (index === formData.tareaIds.length - 1) return;
-    const newTareaIds = [...formData.tareaIds];
-    [newTareaIds[index], newTareaIds[index + 1]] = [newTareaIds[index + 1], newTareaIds[index]];
-    setFormData({ ...formData, tareaIds: newTareaIds });
-  };
-
-  const toggleTarea = (tareaId: string) => {
-    const newTareaIds = formData.tareaIds.includes(tareaId)
-      ? formData.tareaIds.filter(id => id !== tareaId)
-      : [...formData.tareaIds, tareaId];
-    setFormData({ ...formData, tareaIds: newTareaIds });
-  };
-
-  // Editar tarea dentro del workout
-  const openEditTareaModal = (tarea: Tarea) => {
-    setEditingTareaInWorkout(tarea);
-    setTareaFormData({
-      nombre: tarea.nombre,
-      objetivo: Array.isArray(tarea.objetivo) ? tarea.objetivo : [tarea.objetivo],
-      material: tarea.material,
-      metros: tarea.metros.toString(),
-      descripcion: tarea.descripcion || '',
-    });
-    setShowEditTareaModal(true);
-  };
-
-  const handleSaveTareaInWorkout = () => {
-    if (!editingTareaInWorkout) return;
-    
-    // Actualizar la tarea en la lista local
-    const updatedTareas = tareas.map(t => 
-      t.id === editingTareaInWorkout.id 
-        ? { 
-            ...t, 
-            nombre: tareaFormData.nombre,
-            objetivo: tareaFormData.objetivo,
-            material: tareaFormData.material,
-            metros: parseInt(tareaFormData.metros) || 0,
-            descripcion: tareaFormData.descripcion
-          }
-        : t
-    );
-    setTareas(updatedTareas);
-    setShowEditTareaModal(false);
-    setEditingTareaInWorkout(null);
-  };
-
-  // Guardar workout + generar PDF
+  // Issue #1: Fix spinner — router.push movido al finally DESPUÉS de setSaving(false)
   const handleSave = async () => {
     if (!formData.titulo.trim()) return;
-
     setSaving(true);
+    let redirectAfter = false;
     try {
-      const selectedTareas = tareas.filter(t => formData.tareaIds.includes(t.id));
-      const totalMetros = selectedTareas.reduce((acc, t) => acc + t.metros, 0);
+      // Preservar orden de tareaIds (issue #6)
+      const selTareas = formData.tareaIds.map(id => tareas.find(t => t.id === id)).filter(Boolean) as Tarea[];
+      const totalMetros = calculateMetros(formData.tareaIds);
       const objetivoCalculado = calculateObjective(formData.tareaIds);
       const materialCalculado = calculateMaterial(formData.tareaIds);
 
-      // Generar PDF como blob URL
       const blobUrl = await generateWorkoutPDF(
         { titulo: formData.titulo, comentarios: formData.comentarios },
-        selectedTareas,
+        selTareas,
         objetivoCalculado,
         materialCalculado,
         totalMetros,
@@ -412,8 +369,7 @@ export default function EditarWorkoutPage() {
       let workoutIdSaved: string;
 
       if (isNewMode) {
-        const workoutsRef = collection(db, 'workouts');
-        const newWorkout = await addDoc(workoutsRef, {
+        const newDoc = await addDoc(collection(db, 'workouts'), {
           titulo: formData.titulo.trim(),
           objetivo: objetivoCalculado,
           material: materialCalculado,
@@ -422,7 +378,7 @@ export default function EditarWorkoutPage() {
           comentarios: formData.comentarios.trim(),
           fecha: new Date().toISOString(),
         });
-        workoutIdSaved = newWorkout.id;
+        workoutIdSaved = newDoc.id;
       } else {
         if (!workout) return;
         await updateDoc(doc(db, 'workouts', workout.id), {
@@ -434,9 +390,10 @@ export default function EditarWorkoutPage() {
           comentarios: formData.comentarios.trim(),
         });
         workoutIdSaved = workout.id;
+        redirectAfter = true;
       }
 
-      // Subir PDF a Firebase Storage: convertir blob URL → blob → ArrayBuffer → base64
+      // Subir PDF a Storage
       const blobResp = await fetch(blobUrl);
       const pdfBlob = await blobResp.blob();
       const arrayBuf = await pdfBlob.arrayBuffer();
@@ -448,7 +405,6 @@ export default function EditarWorkoutPage() {
       const pdfRef = ref(storage, `workouts/${workoutIdSaved}_workout.pdf`);
       await uploadString(pdfRef, pdfBase64, 'base64', { contentType: 'application/pdf' });
       const pdfUrl = await getDownloadURL(pdfRef);
-
       await updateDoc(doc(db, 'workouts', workoutIdSaved), { pdfUrl });
 
       // Descargar localmente
@@ -456,133 +412,63 @@ export default function EditarWorkoutPage() {
       link.href = blobUrl;
       link.download = `${formData.titulo.replace(/\s+/g, '_')}_workout.pdf`;
       link.click();
-
       URL.revokeObjectURL(blobUrl);
-      router.push('/entrenador/workouts');
+
+      // Issue #5: En modo nuevo, habilitar botón Asignar en lugar de redirigir
+      if (isNewMode) {
+        const builtWorkout: Workout = {
+          id: workoutIdSaved,
+          titulo: formData.titulo.trim(),
+          objetivo: objetivoCalculado,
+          material: materialCalculado,
+          metros: totalMetros,
+          tareaIds: formData.tareaIds,
+          fecha: new Date().toISOString(),
+          comentarios: formData.comentarios.trim(),
+          pdfUrl,
+        };
+        setSavedWorkoutId(workoutIdSaved);
+        setSavedWorkoutData(builtWorkout);
+        setWorkout(builtWorkout);
+      }
     } catch (err) {
       console.error('Error saving workout:', err);
       setError('Error al guardar el workout');
     } finally {
+      // Issue #1: setSaving ANTES de router.push para que el spinner desaparezca
       setSaving(false);
+      if (redirectAfter) {
+        router.push('/entrenador/workouts');
+      }
     }
   };
 
-  // Construye el mensaje de WhatsApp para un cliente
-  const buildWhatsAppMessage = (nombreCliente: string, pdfUrl?: string): string => {
-    if (!workout) return '';
-    const fechaFormateada = new Date(assignData.fecha).toLocaleDateString('es-ES', {
+  // Issue #7: WhatsApp iOS fix — construir URLs ANTES de los awaits
+  const buildWhatsAppMessage = (nombreCliente: string, workoutRef: Workout, fechaStr: string, pdfUrl?: string): string => {
+    const fechaFormateada = new Date(fechaStr).toLocaleDateString('es-ES', {
       weekday: 'long', day: 'numeric', month: 'long',
     });
     let msg =
       `¡Hola ${nombreCliente}! 🏊 Tienes un nuevo entrenamiento asignado:\n\n` +
-      `*${workout.titulo}*\n\n` +
+      `*${workoutRef.titulo}*\n\n` +
       `📅 Fecha: ${fechaFormateada}\n` +
-      `🎯 Objetivo: ${workout.objetivo}\n` +
-      `📏 Metros: ${workout.metros}m\n` +
-      `🎒 Material: ${workout.material}`;
-
+      `🎯 Objetivo: ${workoutRef.objetivo}\n` +
+      `📏 Metros: ${workoutRef.metros}m\n` +
+      `🎒 Material: ${workoutRef.material}`;
     if (assignData.includePdf && pdfUrl) {
       msg += `\n\n📄 *Descarga tu entrenamiento en PDF:*\n${pdfUrl}`;
     }
-
     msg += `\n\n_VideoAnalisis Natación — Pablo Rodríguez Madurga_`;
     return msg;
   };
 
-  // Limpia el número de teléfono: quita espacios, guiones y añade +34 si es español sin prefijo
   const formatPhone = (tel: string): string => {
     const clean = tel.replace(/[\s\-().]/g, '');
     if (!clean) return '';
     if (clean.startsWith('+')) return clean;
     if (clean.startsWith('00')) return '+' + clean.slice(2);
-    // Número español de 9 dígitos sin prefijo
     if (/^[6789]\d{8}$/.test(clean)) return '+34' + clean;
     return clean;
-  };
-
-  // Asignar workout
-  const handleAssign = async () => {
-    if (!workout || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha) return;
-
-    setAssignLoading(true);
-    try {
-      const asignacionesRef = collection(db, 'asignaciones');
-      const pdfUrl = (workout as any).pdfUrl as string | undefined;
-
-      // ── Cliente individual ───────────────────────────────────────────────────
-      if (assignData.clienteId) {
-        await addDoc(asignacionesRef, {
-          workoutId: workout.id,
-          clienteId: assignData.clienteId,
-          grupoId: null,
-          fechaAsignada: assignData.fecha,
-          estado: 'pendiente',
-        });
-
-        const cliente = clientes.find(c => c.id === assignData.clienteId);
-        const nombreCompleto = cliente ? `${cliente.nombre} ${cliente.apellido}` : 'Nadador/a';
-        const msg = buildWhatsAppMessage(nombreCompleto, pdfUrl);
-        const tel = formatPhone(cliente?.telefono || '');
-
-        // Si tiene teléfono, abrir chat directo; si no, abrir composición sin destinatario
-        const waUrl = tel
-          ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
-          : `https://wa.me/?text=${encodeURIComponent(msg)}`;
-
-        window.open(waUrl, '_blank');
-      }
-
-      // ── Grupo completo ───────────────────────────────────────────────────────
-      else if (assignData.grupoId) {
-        const grupo = grupos.find(g => g.id === assignData.grupoId);
-        const clientesDelGrupo = getClientesDelGrupo(assignData.grupoId);
-
-        // Guardar asignación para cada cliente del grupo
-        for (const cliente of clientesDelGrupo) {
-          await addDoc(asignacionesRef, {
-            workoutId: workout.id,
-            clienteId: cliente.id,
-            grupoId: assignData.grupoId,
-            fechaAsignada: assignData.fecha,
-            estado: 'pendiente',
-          });
-        }
-
-        // Abrir WhatsApp para cada cliente que tenga teléfono
-        const clientesConTel = clientesDelGrupo.filter(c => c.telefono?.trim());
-        const clientesSinTel  = clientesDelGrupo.filter(c => !c.telefono?.trim());
-
-        if (clientesConTel.length === 0) {
-          // Ninguno tiene teléfono — mensaje genérico sin destinatario
-          const msg = buildWhatsAppMessage(grupo?.nombre || 'grupo', pdfUrl);
-          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-        } else {
-          // Abrir una pestaña por cada cliente con teléfono
-          clientesConTel.forEach((cliente, idx) => {
-            const nombreCompleto = `${cliente.nombre} ${cliente.apellido}`;
-            const msg = buildWhatsAppMessage(nombreCompleto, pdfUrl);
-            const tel = formatPhone(cliente.telefono!);
-            // setTimeout escalonado para que el bloqueador de popups no lo mate
-            setTimeout(() => {
-              window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank');
-            }, idx * 600);
-          });
-
-          if (clientesSinTel.length > 0) {
-            const nombres = clientesSinTel.map(c => `${c.nombre} ${c.apellido}`).join(', ');
-            alert(`⚠️ Los siguientes clientes no tienen teléfono registrado y no recibirán WhatsApp:\n${nombres}`);
-          }
-        }
-      }
-
-      setShowAssignModal(false);
-      setAssignData({ grupoId: '', clienteId: '', fecha: new Date().toISOString().split('T')[0], includePdf: false });
-    } catch (err) {
-      console.error('Error assigning workout:', err);
-      setError('Error al asignar el workout');
-    } finally {
-      setAssignLoading(false);
-    }
   };
 
   const getClientesDelGrupo = (grupoId: string) => {
@@ -591,15 +477,103 @@ export default function EditarWorkoutPage() {
     return clientes.filter(c => grupo.clienteIds.includes(c.id));
   };
 
+  // Issue #7: handleAssign — pre-computar URLs antes de los awaits para iOS Safari
+  const handleAssign = async () => {
+    const workoutRef = savedWorkoutData || workout;
+    if (!workoutRef || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha) return;
+
+    setAssignLoading(true);
+    try {
+      const asignacionesRef = collection(db, 'asignaciones');
+      const pdfUrl = workoutRef.pdfUrl;
+
+      if (assignData.clienteId) {
+        // Pre-computar URL de WhatsApp ANTES del await (fix iOS Safari)
+        const cliente = clientes.find(c => c.id === assignData.clienteId);
+        const nombreCompleto = cliente ? `${cliente.nombre} ${cliente.apellido}` : 'Nadador/a';
+        const msg = buildWhatsAppMessage(nombreCompleto, workoutRef, assignData.fecha, pdfUrl);
+        const tel = formatPhone(cliente?.telefono || '');
+        const waUrl = tel
+          ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
+          : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+        // Primero abrir WhatsApp (síncrono, antes del await) — fix iOS
+        window.open(waUrl, '_blank');
+
+        // Luego guardar en Firestore (async)
+        await addDoc(asignacionesRef, {
+          workoutId: workoutRef.id,
+          clienteId: assignData.clienteId,
+          grupoId: null,
+          fechaAsignada: assignData.fecha,
+          estado: 'pendiente',
+        });
+      } else if (assignData.grupoId) {
+        const grupo = grupos.find(g => g.id === assignData.grupoId);
+        const clientesDelGrupo = getClientesDelGrupo(assignData.grupoId);
+        const clientesConTel = clientesDelGrupo.filter(c => c.telefono?.trim());
+        const clientesSinTel = clientesDelGrupo.filter(c => !c.telefono?.trim());
+
+        // Pre-computar todas las URLs ANTES de los awaits (fix iOS Safari)
+        let waUrls: string[] = [];
+        if (clientesConTel.length === 0) {
+          const msg = buildWhatsAppMessage(grupo?.nombre || 'grupo', workoutRef, assignData.fecha, pdfUrl);
+          waUrls = [`https://wa.me/?text=${encodeURIComponent(msg)}`];
+        } else {
+          waUrls = clientesConTel.map(cliente => {
+            const nombreCompleto = `${cliente.nombre} ${cliente.apellido}`;
+            const msg = buildWhatsAppMessage(nombreCompleto, workoutRef, assignData.fecha, pdfUrl);
+            const tel = formatPhone(cliente.telefono!);
+            return `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`;
+          });
+        }
+
+        // Guardar asignaciones en Firestore
+        for (const cliente of clientesDelGrupo) {
+          await addDoc(asignacionesRef, {
+            workoutId: workoutRef.id,
+            clienteId: cliente.id,
+            grupoId: assignData.grupoId,
+            fechaAsignada: assignData.fecha,
+            estado: 'pendiente',
+          });
+        }
+
+        // Abrir WhatsApp después de los awaits con setTimeout escalonado
+        waUrls.forEach((url, idx) => {
+          setTimeout(() => window.open(url, '_blank'), idx * 600);
+        });
+
+        if (clientesSinTel.length > 0) {
+          const nombres = clientesSinTel.map(c => `${c.nombre} ${c.apellido}`).join(', ');
+          alert(`⚠️ Los siguientes clientes no tienen teléfono registrado:\n${nombres}`);
+        }
+      }
+
+      setShowAssignModal(false);
+      setAssignData({ grupoId: '', clienteId: '', fecha: new Date().toISOString().split('T')[0], includePdf: false });
+
+      // Si era modo nuevo y ya guardamos, redirigir después de asignar
+      if (isNewMode && savedWorkoutId) {
+        router.push('/entrenador/workouts');
+      }
+    } catch (err) {
+      console.error('Error assigning workout:', err);
+      setError('Error al asignar el workout');
+    } finally {
+      setAssignLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-ocean-600"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-ocean-600" />
       </div>
     );
   }
 
-  if (error) {
+  if (error && !saving) {
     return (
       <div className="space-y-6">
         <button
@@ -609,15 +583,19 @@ export default function EditarWorkoutPage() {
           <ArrowLeft className="w-4 h-4" />
           Volver al listado
         </button>
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-          {error}
-        </div>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
       </div>
     );
   }
 
   const { sorted: filteredTareas, recommendedObjectives } = getFilteredAndSortedTareas();
-  const selectedTareas = tareas.filter(t => formData.tareaIds.includes(t.id));
+  // Issue #6: preservar el ORDEN de formData.tareaIds al renderizar
+  const selectedTareas = formData.tareaIds
+    .map(id => tareas.find(t => t.id === id))
+    .filter(Boolean) as Tarea[];
+
+  // Workout de referencia para el modal de asignación
+  const workoutForAssign = savedWorkoutData || workout;
 
   return (
     <div className="space-y-6">
@@ -631,47 +609,65 @@ export default function EditarWorkoutPage() {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-ocean-800">{isNewMode ? 'Nuevo Workout' : 'Editar Workout'}</h1>
-            <p className="text-ocean-600">{isNewMode ? 'Crea un nuevo entrenamiento' : workout?.titulo}</p>
+            <h1 className="text-2xl font-bold text-ocean-800">
+              {isNewMode ? 'Nuevo Workout' : 'Editar Workout'}
+            </h1>
+            <p className="text-ocean-600">
+              {isNewMode ? 'Crea un nuevo entrenamiento' : workout?.titulo}
+            </p>
           </div>
         </div>
+        {/* Issue #4: Botones solo icono */}
         <div className="flex gap-2">
-          {/* Botón previsualizar PDF */}
           <button
             onClick={handlePreviewPdf}
             disabled={generatingPdf || formData.tareaIds.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+            title="Previsualizar PDF"
+            className="p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
           >
-            {generatingPdf ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Eye className="w-4 h-4" />
-            )}
-            Previsualizar PDF
+            {generatingPdf ? <Loader2 className="w-5 h-5 animate-spin" /> : <Eye className="w-5 h-5" />}
           </button>
-          {!isNewMode && (
+          {/* Asignar: visible si es modo edición existente O si ya se guardó el nuevo */}
+          {(!isNewMode || savedWorkoutId) && (
             <button
               onClick={() => setShowAssignModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+              title="Asignar workout"
+              className="p-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
             >
-              <Send className="w-4 h-4" />
-              Asignar
+              <Send className="w-5 h-5" />
             </button>
           )}
         </div>
       </div>
 
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
+      )}
+
+      {/* Banner: workout guardado, pendiente de asignar */}
+      {isNewMode && savedWorkoutId && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-center justify-between">
+          <p className="text-green-700 text-sm font-medium">
+            ✅ Workout guardado correctamente. Puedes asignarlo ahora o volver al listado.
+          </p>
+          <button
+            onClick={() => router.push('/entrenador/workouts')}
+            className="text-sm text-green-600 hover:text-green-800 underline ml-4 flex-shrink-0"
+          >
+            Ir al listado
+          </button>
+        </div>
+      )}
+
       {/* Form */}
       <div className="bg-white rounded-xl shadow-sm p-6 space-y-6">
         <div>
-          <label className="block text-sm font-medium text-ocean-700 mb-2">
-            Título *
-          </label>
+          <label className="block text-sm font-medium text-ocean-700 mb-2">Título *</label>
           <input
             type="text"
             value={formData.titulo}
             onChange={(e) => setFormData({ ...formData, titulo: e.target.value })}
-            placeholder="Ej: Entrenamiento Tuesday"
+            placeholder="Ej: Entrenamiento martes"
             className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
           />
         </div>
@@ -681,7 +677,7 @@ export default function EditarWorkoutPage() {
           <label className="block text-sm font-medium text-ocean-700 mb-2">
             Tareas seleccionadas ({formData.tareaIds.length})
           </label>
-          {formData.tareaIds.length > 0 ? (
+          {selectedTareas.length > 0 ? (
             <div className="space-y-2 mb-4">
               {selectedTareas.map((tarea, idx) => (
                 <div key={tarea.id} className="flex items-center gap-3 bg-ocean-50 rounded-lg p-3">
@@ -701,23 +697,27 @@ export default function EditarWorkoutPage() {
                       <ChevronDown className="w-4 h-4" />
                     </button>
                   </div>
-                  <span className="w-6 h-6 bg-ocean-600 text-white rounded-full text-xs flex items-center justify-center">
+                  <span className="w-6 h-6 bg-ocean-600 text-white rounded-full text-xs flex items-center justify-center flex-shrink-0">
                     {idx + 1}
                   </span>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-ocean-800 whitespace-pre-wrap">{tarea.nombre}</p>
-                    <p className="text-xs text-ocean-500">{tarea.metros}m • {Array.isArray(tarea.objetivo) ? tarea.objetivo.join(', ') : tarea.objetivo}</p>
+                    <p className="text-xs text-ocean-500">
+                      {tarea.metros}m • {Array.isArray(tarea.objetivo) ? tarea.objetivo.join(', ') : tarea.objetivo}
+                    </p>
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex gap-1 flex-shrink-0">
                     <button
                       onClick={() => openEditTareaModal(tarea)}
-                      className="p-2 text-ocean-400 hover:text-ocean-600"
+                      className="p-2 text-ocean-400 hover:text-ocean-600 hover:bg-ocean-100 rounded-lg"
+                      title="Editar tarea"
                     >
                       <Edit className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => toggleTarea(tarea.id)}
-                      className="p-2 text-red-400 hover:text-red-600"
+                      className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                      title="Quitar del workout"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -726,31 +726,44 @@ export default function EditarWorkoutPage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-ocean-500 mb-4">No hay tareas seleccionadas</p>
+            <p className="text-sm text-ocean-500 mb-4 bg-ocean-50 rounded-lg p-4 text-center">
+              Selecciona tareas del banco para agregarlas al workout
+            </p>
           )}
         </div>
 
-        {/* Banco de tareas con recomendaciones */}
+        {/* Banco de tareas */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="block text-sm font-medium text-ocean-700">
-              Agregar Tareas ({tareas.length} disponibles)
+              Banco de Tareas ({filteredTareas.length} disponibles)
             </label>
-            {recommendedObjectives.length > 0 && (
-              <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">
-                Recomendadas: {recommendedObjectives.join(', ')}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {recommendedObjectives.length > 0 && (
+                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">
+                  ✨ {recommendedObjectives.join(', ')}
+                </span>
+              )}
+              {/* Issue #3: Botón nueva tarea */}
+              <button
+                onClick={openNewTareaModal}
+                title="Crear nueva tarea en el banco"
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
+              >
+                <Plus className="w-3 h-3" />
+                Nueva tarea
+              </button>
+            </div>
           </div>
-          
-          {/* Filtros */}
-          <div className="flex gap-2 mb-3">
+
+          {/* Filtros — Issue #2: input metros añadido */}
+          <div className="flex flex-wrap gap-2 mb-3">
             <input
               type="text"
               placeholder="Buscar tarea..."
               value={taskSearch}
               onChange={(e) => setTaskSearch(e.target.value)}
-              className="flex-1 px-3 py-2 border border-ocean-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              className="flex-1 min-w-[140px] px-3 py-2 border border-ocean-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ocean-500"
             />
             <select
               value={taskFiltroObjetivo}
@@ -768,44 +781,70 @@ export default function EditarWorkoutPage() {
               <option value="">Material</option>
               {materialOpciones.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
+            <input
+              type="number"
+              placeholder="Metros mín."
+              value={taskFiltroMetros}
+              onChange={(e) => setTaskFiltroMetros(e.target.value)}
+              className="w-28 px-3 py-2 border border-ocean-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              min="0"
+            />
           </div>
 
           <div className="max-h-64 overflow-y-auto border border-ocean-200 rounded-lg">
-            {filteredTareas.map((tarea) => (
-              <div
-                key={tarea.id}
-                onClick={() => toggleTarea(tarea.id)}
-                className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-ocean-50 border-b border-ocean-100 last:border-b-0 ${
-                  formData.tareaIds.includes(tarea.id) ? 'bg-ocean-50' : ''
-                }`}
-              >
-                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                  formData.tareaIds.includes(tarea.id)
-                    ? 'border-ocean-500 bg-ocean-500'
-                    : 'border-ocean-300'
-                }`}>
-                  {formData.tareaIds.includes(tarea.id) && (
-                    <div className="w-2 h-2 bg-white rounded-full" />
-                  )}
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-ocean-800 whitespace-pre-wrap">{tarea.nombre}</p>
-                  <p className="text-xs text-ocean-500">
-                    {Array.isArray(tarea.objetivo) ? tarea.objetivo.join(', ') : tarea.objetivo} • {tarea.metros}m
-                  </p>
-                </div>
-              </div>
-            ))}
+            {filteredTareas.length === 0 ? (
+              <p className="text-center text-ocean-500 py-8 text-sm">No hay tareas que coincidan</p>
+            ) : (
+              filteredTareas.map((tarea) => {
+                const isSelected = formData.tareaIds.includes(tarea.id);
+                const objs = Array.isArray(tarea.objetivo) ? tarea.objetivo : [tarea.objetivo].filter(Boolean);
+                const isRecommended = objs.some(o => recommendedObjectives.includes(o));
+                return (
+                  <div
+                    key={tarea.id}
+                    onClick={() => toggleTarea(tarea.id)}
+                    className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-ocean-50 border-b border-ocean-100 last:border-b-0 transition-colors ${isSelected ? 'bg-ocean-50' : ''}`}
+                  >
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${isSelected ? 'border-ocean-500 bg-ocean-500' : 'border-ocean-300'}`}>
+                      {isSelected && <div className="w-2 h-2 bg-white rounded-full" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-ocean-800 whitespace-pre-wrap">{tarea.nombre}</p>
+                        {isRecommended && !isSelected && (
+                          <span className="text-xs bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded flex-shrink-0">✨</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-ocean-500">
+                        {objs.join(', ')} • {tarea.metros}m • {tarea.material}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
-        {/* Info automática */}
-        <div className="bg-ocean-50 rounded-lg p-4 text-sm text-ocean-600">
-          <p><strong>Metros totales:</strong> {calculateMetros(formData.tareaIds)}m</p>
-          <p><strong>Objetivo:</strong> {calculateObjective(formData.tareaIds)}</p>
-        </div>
+        {/* Info calculada */}
+        {formData.tareaIds.length > 0 && (
+          <div className="bg-ocean-50 rounded-lg p-4 grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <p className="text-ocean-500 text-xs mb-1">Metros totales</p>
+              <p className="font-semibold text-ocean-800">{calculateMetros(formData.tareaIds)}m</p>
+            </div>
+            <div>
+              <p className="text-ocean-500 text-xs mb-1">Objetivo principal</p>
+              <p className="font-semibold text-ocean-800">{calculateObjective(formData.tareaIds)}</p>
+            </div>
+            <div>
+              <p className="text-ocean-500 text-xs mb-1">Material</p>
+              <p className="font-semibold text-ocean-800 truncate">{calculateMaterial(formData.tareaIds)}</p>
+            </div>
+          </div>
+        )}
 
-        {/* Comentarios / Frase motivacional */}
+        {/* Comentarios */}
         <div>
           <label className="block text-sm font-medium text-ocean-700 mb-2">
             Comentarios / Frase motivacional (opcional)
@@ -819,25 +858,23 @@ export default function EditarWorkoutPage() {
           />
         </div>
 
-        {/* Botón guardar */}
-        <button
-          onClick={handleSave}
-          disabled={saving || !formData.titulo.trim()}
-          className="w-full flex items-center justify-center gap-2 py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {saving ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Save className="w-4 h-4" />
-          )}
-          Guardar Workout
-        </button>
+        {/* Botón guardar — oculto si ya se guardó en modo nuevo */}
+        {!(isNewMode && savedWorkoutId) && (
+          <button
+            onClick={handleSave}
+            disabled={saving || !formData.titulo.trim()}
+            className="w-full flex items-center justify-center gap-2 py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Guardando...' : 'Guardar Workout'}
+          </button>
+        )}
       </div>
 
       {/* Modal de asignación */}
-      {showAssignModal && (
+      {showAssignModal && workoutForAssign && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl max-w-md w-full p-6 space-y-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-ocean-800">Asignar Workout</h2>
               <button onClick={() => setShowAssignModal(false)} className="text-ocean-400 hover:text-ocean-600">
@@ -864,16 +901,13 @@ export default function EditarWorkoutPage() {
                   );
                 })}
               </select>
-              {/* Preview clientes del grupo */}
               {assignData.grupoId && (
                 <div className="mt-2 max-h-32 overflow-y-auto space-y-1">
                   {getClientesDelGrupo(assignData.grupoId).map(c => (
                     <div key={c.id} className="flex items-center justify-between text-xs bg-ocean-50 rounded px-2 py-1">
                       <span className="text-ocean-700 font-medium">{c.nombre} {c.apellido}</span>
                       {c.telefono?.trim() ? (
-                        <span className="text-green-600 flex items-center gap-1">
-                          📱 {c.telefono}
-                        </span>
+                        <span className="text-green-600">📱 {c.telefono}</span>
                       ) : (
                         <span className="text-red-400">Sin teléfono</span>
                       )}
@@ -883,7 +917,6 @@ export default function EditarWorkoutPage() {
               )}
             </div>
 
-            {/* Divisor */}
             <div className="flex items-center gap-2 text-ocean-400 text-xs">
               <div className="flex-1 h-px bg-ocean-100" />
               <span>o</span>
@@ -905,16 +938,13 @@ export default function EditarWorkoutPage() {
                   </option>
                 ))}
               </select>
-              {/* Preview teléfono del cliente seleccionado */}
               {assignData.clienteId && (() => {
                 const sel = clientes.find(c => c.id === assignData.clienteId);
                 return sel ? (
                   <div className={`mt-2 flex items-center gap-2 text-xs rounded-lg px-3 py-2 ${sel.telefono?.trim() ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
-                    {sel.telefono?.trim() ? (
-                      <>📱 WhatsApp enviado a <strong>{formatPhone(sel.telefono)}</strong></>
-                    ) : (
-                      <>⚠️ Este cliente no tiene teléfono — se abrirá WhatsApp Web sin destinatario</>
-                    )}
+                    {sel.telefono?.trim()
+                      ? <>📱 WhatsApp a <strong>{formatPhone(sel.telefono)}</strong></>
+                      : <>⚠️ Sin teléfono — se abrirá WhatsApp Web sin destinatario</>}
                   </div>
                 ) : null;
               })()}
@@ -943,61 +973,63 @@ export default function EditarWorkoutPage() {
                 <div>
                   <p className="text-sm font-medium text-ocean-700">Incluir enlace de descarga del PDF</p>
                   <p className="text-xs text-ocean-500 mt-0.5">
-                    {(workout as any)?.pdfUrl
-                      ? 'Se adjuntará el enlace de descarga en el mensaje de WhatsApp'
-                      : 'El workout no tiene PDF generado aún — guárdalo primero'}
+                    {workoutForAssign?.pdfUrl
+                      ? 'Se adjuntará el enlace en el mensaje de WhatsApp'
+                      : 'Guarda el workout primero para generar el PDF'}
                   </p>
                 </div>
               </label>
-              {assignData.includePdf && (workout as any)?.pdfUrl && (
+              {assignData.includePdf && workoutForAssign?.pdfUrl && (
                 <div className="mt-2 text-xs text-ocean-500 bg-white rounded px-2 py-1 border border-ocean-200 truncate">
-                  🔗 {(workout as any).pdfUrl}
+                  🔗 {workoutForAssign.pdfUrl}
                 </div>
               )}
             </div>
 
-            {/* Botón asignar */}
             <button
               onClick={handleAssign}
               disabled={assignLoading || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha}
               className="w-full flex items-center justify-center gap-2 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium"
             >
-              {assignLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
+              {assignLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               {assignLoading ? 'Asignando...' : 'Asignar y enviar por WhatsApp'}
             </button>
 
-            {/* Info sobre apertura de pestañas */}
             {assignData.grupoId && getClientesDelGrupo(assignData.grupoId).filter(c => c.telefono?.trim()).length > 1 && (
               <p className="text-xs text-center text-ocean-400">
                 Se abrirá una ventana de WhatsApp por cada cliente con teléfono registrado.
-                Asegúrate de que tu navegador permite ventanas emergentes.
               </p>
             )}
           </div>
         </div>
       )}
 
-      {/* Modal de edición de tarea */}
-      {showEditTareaModal && editingTareaInWorkout && (
+      {/* Modal crear / editar tarea (Issue #3) */}
+      {showTareaModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-ocean-800">Editar Tarea</h2>
-              <button onClick={() => setShowEditTareaModal(false)} className="text-ocean-400 hover:text-ocean-600">
+              <h2 className="text-lg font-bold text-ocean-800">
+                {isCreatingNewTarea ? 'Nueva Tarea' : 'Editar Tarea'}
+              </h2>
+              <button onClick={() => setShowTareaModal(false)} className="text-ocean-400 hover:text-ocean-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
+            {isCreatingNewTarea && (
+              <p className="text-xs text-ocean-500 bg-ocean-50 rounded-lg px-3 py-2">
+                La tarea se guardará en el banco de tareas y se añadirá automáticamente al workout.
+              </p>
+            )}
+
             <div>
-              <label className="block text-sm font-medium text-ocean-700 mb-1">Nombre</label>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Nombre *</label>
               <textarea
                 value={tareaFormData.nombre}
                 onChange={(e) => setTareaFormData({ ...tareaFormData, nombre: e.target.value })}
                 rows={2}
+                placeholder="Descripción del ejercicio..."
                 className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
               />
             </div>
@@ -1006,7 +1038,7 @@ export default function EditarWorkoutPage() {
               <label className="block text-sm font-medium text-ocean-700 mb-1">Objetivos</label>
               <div className="flex flex-wrap gap-2">
                 {objetivosOpciones.map(o => (
-                  <label key={o} className="flex items-center gap-1 text-sm">
+                  <label key={o} className="flex items-center gap-1 text-sm cursor-pointer">
                     <input
                       type="checkbox"
                       checked={tareaFormData.objetivo.includes(o)}
@@ -1025,26 +1057,28 @@ export default function EditarWorkoutPage() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-ocean-700 mb-1">Metros</label>
-              <input
-                type="number"
-                value={tareaFormData.metros}
-                onChange={(e) => setTareaFormData({ ...tareaFormData, metros: e.target.value })}
-                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-ocean-700 mb-1">Material</label>
-              <select
-                value={tareaFormData.material}
-                onChange={(e) => setTareaFormData({ ...tareaFormData, material: e.target.value })}
-                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-              >
-                <option value="">Seleccionar...</option>
-                {materialOpciones.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-1">Metros</label>
+                <input
+                  type="number"
+                  value={tareaFormData.metros}
+                  onChange={(e) => setTareaFormData({ ...tareaFormData, metros: e.target.value })}
+                  className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-1">Material</label>
+                <select
+                  value={tareaFormData.material}
+                  onChange={(e) => setTareaFormData({ ...tareaFormData, material: e.target.value })}
+                  className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                >
+                  <option value="">Seleccionar...</option>
+                  {materialOpciones.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
             </div>
 
             <div>
@@ -1053,22 +1087,24 @@ export default function EditarWorkoutPage() {
                 value={tareaFormData.descripcion}
                 onChange={(e) => setTareaFormData({ ...tareaFormData, descripcion: e.target.value })}
                 rows={3}
+                placeholder="Notas adicionales..."
                 className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
               />
             </div>
 
             <div className="flex gap-2">
               <button
-                onClick={() => setShowEditTareaModal(false)}
+                onClick={() => setShowTareaModal(false)}
                 className="flex-1 py-2 border border-ocean-200 text-ocean-600 rounded-lg hover:bg-ocean-50"
               >
                 Cancelar
               </button>
               <button
-                onClick={handleSaveTareaInWorkout}
-                className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
+                onClick={handleSaveTarea}
+                disabled={!tareaFormData.nombre.trim()}
+                className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50"
               >
-                Guardar Tarea
+                {isCreatingNewTarea ? 'Crear y añadir' : 'Guardar cambios'}
               </button>
             </div>
           </div>
@@ -1078,10 +1114,10 @@ export default function EditarWorkoutPage() {
       {/* Modal previsualización PDF */}
       {showPdfPreview && pdfPreviewUrl && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
-          <div className="bg-white rounded-xl w-full max-w-4xl flex flex-col" style={{height: '90vh'}}>
+          <div className="bg-white rounded-xl w-full max-w-4xl flex flex-col" style={{ height: '90vh' }}>
             <div className="flex items-center justify-between p-4 border-b border-ocean-200 flex-shrink-0">
               <h2 className="text-lg font-semibold text-ocean-800">
-                Previsualización del PDF — {formData.titulo}
+                Previsualización — {formData.titulo}
               </h2>
               <div className="flex gap-2">
                 <a

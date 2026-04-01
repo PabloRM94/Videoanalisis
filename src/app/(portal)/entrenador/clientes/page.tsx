@@ -14,7 +14,7 @@ import {
   deleteDoc,
   serverTimestamp 
 } from 'firebase/firestore';
-import { Users, Plus, Search, MoreVertical, Edit, Trash2, X, Eye, Send, Loader2 } from 'lucide-react';
+import { Users, UserPlus, Plus, Search, Edit, Trash2, X, Eye, Send, Loader2 } from 'lucide-react';
 
 interface Cliente {
   id: string;
@@ -46,6 +46,14 @@ export default function EntrenadorClientesPage() {
   const [showCreateGrupo, setShowCreateGrupo] = useState(false);
   const [showCreateCliente, setShowCreateCliente] = useState(false);
   const [newGrupoNombre, setNewGrupoNombre] = useState('');
+  const [creatingCliente, setCreatingCliente] = useState(false);
+  const [newClienteFormData, setNewClienteFormData] = useState({
+    nombre: '',
+    apellido: '',
+    email: '',
+    telefono: '',
+    objetivo: '',
+  });
   const [selectedGrupo, setSelectedGrupo] = useState<string>('');
   
   // Estados para modales
@@ -169,6 +177,41 @@ export default function EntrenadorClientesPage() {
       setShowCreateGrupo(false);
     } catch (error) {
       console.error('Error creating grupo:', error);
+    }
+  };
+
+  // Crear cliente directamente (sin Firebase Auth — solo documento en Firestore)
+  const createCliente = async () => {
+    if (!newClienteFormData.nombre.trim()) return;
+    setCreatingCliente(true);
+    try {
+      const newDoc = await addDoc(collection(db, 'users'), {
+        nombre: newClienteFormData.nombre.trim(),
+        apellido: newClienteFormData.apellido.trim(),
+        email: newClienteFormData.email.trim(),
+        telefono: newClienteFormData.telefono.trim(),
+        objetivo: newClienteFormData.objetivo,
+        role: 'cliente',
+        grupoId: null,
+        createdByTrainer: true,
+        createdAt: serverTimestamp(),
+      });
+
+      const nuevoCliente: Cliente = {
+        id: newDoc.id,
+        nombre: newClienteFormData.nombre.trim(),
+        email: newClienteFormData.email.trim(),
+        telefono: newClienteFormData.telefono.trim(),
+        objetivo: newClienteFormData.objetivo,
+        grupoId: null,
+      };
+      setClientes(prev => [...prev, nuevoCliente]);
+      setNewClienteFormData({ nombre: '', apellido: '', email: '', telefono: '', objetivo: '' });
+      setShowCreateCliente(false);
+    } catch (error) {
+      console.error('Error creating cliente:', error);
+    } finally {
+      setCreatingCliente(false);
     }
   };
 
@@ -410,6 +453,13 @@ export default function EntrenadorClientesPage() {
             <Plus className="w-4 h-4" />
             Nuevo Grupo
           </button>
+          <button
+            onClick={() => setShowCreateCliente(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
+          >
+            <UserPlus className="w-4 h-4" />
+            Nuevo Cliente
+          </button>
         </div>
       </div>
 
@@ -493,9 +543,16 @@ export default function EntrenadorClientesPage() {
           <h3 className="text-lg font-medium text-ocean-700 mb-2">
             No hay clientes en este grupo
           </h3>
-          <p className="text-ocean-500">
-            Los clientes se asignarán a este grupo cuando se registren
+          <p className="text-ocean-500 mb-4">
+            Aún no hay clientes. Puedes crear uno manualmente o esperar a que se registren.
           </p>
+          <button
+            onClick={() => setShowCreateCliente(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 mx-auto"
+          >
+            <UserPlus className="w-4 h-4" />
+            Nuevo Cliente
+          </button>
         </div>
       ) : (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -612,6 +669,91 @@ export default function EntrenadorClientesPage() {
                 className="w-full py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
               >
                 Crear Grupo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Cliente Modal */}
+      {showCreateCliente && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-ocean-800">Nuevo Cliente</h2>
+              <button
+                onClick={() => { setShowCreateCliente(false); setNewClienteFormData({ nombre: '', apellido: '', email: '', telefono: '', objetivo: '' }); }}
+                className="p-2 text-ocean-400 hover:text-ocean-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-ocean-500 bg-ocean-50 rounded-lg px-3 py-2 mb-4">
+              El cliente se creará directamente sin cuenta de acceso. En el futuro podrás invitarle a activar su cuenta.
+            </p>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Nombre *</label>
+                  <input
+                    type="text"
+                    value={newClienteFormData.nombre}
+                    onChange={(e) => setNewClienteFormData({ ...newClienteFormData, nombre: e.target.value })}
+                    placeholder="Pablo"
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Apellido</label>
+                  <input
+                    type="text"
+                    value={newClienteFormData.apellido}
+                    onChange={(e) => setNewClienteFormData({ ...newClienteFormData, apellido: e.target.value })}
+                    placeholder="Rodríguez"
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Teléfono</label>
+                <input
+                  type="tel"
+                  value={newClienteFormData.telefono}
+                  onChange={(e) => setNewClienteFormData({ ...newClienteFormData, telefono: e.target.value })}
+                  placeholder="+34 600 000 000"
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Email</label>
+                <input
+                  type="email"
+                  value={newClienteFormData.email}
+                  onChange={(e) => setNewClienteFormData({ ...newClienteFormData, email: e.target.value })}
+                  placeholder="pablo@email.com"
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Objetivo</label>
+                <select
+                  value={newClienteFormData.objetivo}
+                  onChange={(e) => setNewClienteFormData({ ...newClienteFormData, objetivo: e.target.value })}
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                >
+                  <option value="">Seleccionar...</option>
+                  <option value="oposicion">Oposiciones</option>
+                  <option value="triatlon">Triatlón</option>
+                  <option value="crossfit">CrossFit</option>
+                </select>
+              </div>
+              <button
+                onClick={createCliente}
+                disabled={creatingCliente || !newClienteFormData.nombre.trim()}
+                className="w-full flex items-center justify-center gap-2 py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {creatingCliente ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                {creatingCliente ? 'Creando...' : 'Crear Cliente'}
               </button>
             </div>
           </div>

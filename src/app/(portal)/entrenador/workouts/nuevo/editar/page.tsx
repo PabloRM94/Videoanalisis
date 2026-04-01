@@ -3,16 +3,14 @@
 import { useRouter } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import { db, storage } from '@/config/firebase';
-import { doc, getDoc, updateDoc, collection, getDocs, addDoc, query, where } from 'firebase/firestore';
+import { doc, updateDoc, collection, getDocs, addDoc, query, where } from 'firebase/firestore';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
-import { ArrowLeft, Save, Loader2, ChevronUp, ChevronDown, Send, X, Edit, FileText, Eye, FileDown } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, ChevronUp, ChevronDown, Send, X, Edit, Eye, FileDown, Plus } from 'lucide-react';
 import { generateWorkoutPDF } from '@/lib/generateWorkoutPDF';
 
 /**
  * /entrenador/workouts/nuevo/editar
- * Misma lógica que [id]/editar/page.tsx pero con workoutId="nuevo" fijo.
- * Separada porque Next.js prioriza rutas estáticas sobre dinámicas y
- * /nuevo nunca llegaría a [id].
+ * Ruta estática separada de [id]/editar porque Next.js prioriza estáticas sobre dinámicas.
  */
 
 interface Tarea {
@@ -34,6 +32,19 @@ interface Cliente {
   id: string;
   nombre: string;
   apellido: string;
+  telefono?: string;
+}
+
+interface SavedWorkout {
+  id: string;
+  titulo: string;
+  objetivo: string;
+  material: string;
+  metros: number;
+  tareaIds: string[];
+  fecha: string;
+  comentarios: string;
+  pdfUrl?: string;
 }
 
 const objetivosOpciones = [
@@ -54,8 +65,13 @@ export default function NuevoWorkoutEditarPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [showEditTareaModal, setShowEditTareaModal] = useState(false);
-  const [editingTareaInWorkout, setEditingTareaInWorkout] = useState<Tarea | null>(null);
+  // Issue #5: estado del workout guardado (para habilitar Asignar)
+  const [savedWorkout, setSavedWorkout] = useState<SavedWorkout | null>(null);
+
+  // Modal tarea (crear/editar) — Issue #3
+  const [showTareaModal, setShowTareaModal] = useState(false);
+  const [isCreatingNewTarea, setIsCreatingNewTarea] = useState(false);
+  const [editingTarea, setEditingTarea] = useState<Tarea | null>(null);
   const [tareaFormData, setTareaFormData] = useState({
     nombre: '',
     objetivo: [] as string[],
@@ -64,10 +80,23 @@ export default function NuevoWorkoutEditarPage() {
     descripcion: '',
   });
 
+  // Modal asignación
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [assignData, setAssignData] = useState({
+    grupoId: '',
+    clienteId: '',
+    fecha: new Date().toISOString().split('T')[0],
+    includePdf: false,
+  });
+  const [assignLoading, setAssignLoading] = useState(false);
+
+  // Filtros banco de tareas — Issue #2: taskFiltroMetros añadido
   const [taskSearch, setTaskSearch] = useState('');
   const [taskFiltroObjetivo, setTaskFiltroObjetivo] = useState('');
   const [taskFiltroMaterial, setTaskFiltroMaterial] = useState('');
+  const [taskFiltroMetros, setTaskFiltroMetros] = useState('');
 
+  // PDF preview
   const [showPdfPreview, setShowPdfPreview] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [generatingPdf, setGeneratingPdf] = useState(false);
@@ -96,6 +125,7 @@ export default function NuevoWorkoutEditarPage() {
           id: d.id,
           nombre: d.data().nombre || '',
           apellido: d.data().apellido || '',
+          telefono: d.data().telefono || '',
         })));
       } catch (err) {
         console.error(err);
@@ -124,6 +154,7 @@ export default function NuevoWorkoutEditarPage() {
     return [...new Set(mats)].join(', ') || 'Sin material';
   };
 
+  // Issue #2: filtro de metros conectado
   const getFilteredAndSortedTareas = () => {
     const grupo1 = ['CLNT', 'TEC', 'INI'];
     const grupo2 = ['VEL', 'FUER', 'ANA', 'PAL', 'PLAC', 'CAL', 'CLAC'];
@@ -143,7 +174,9 @@ export default function NuevoWorkoutEditarPage() {
         objs.some(o => o.toLowerCase().includes(taskSearch.toLowerCase()));
       const matchObj = !taskFiltroObjetivo || objs.includes(taskFiltroObjetivo);
       const matchMat = !taskFiltroMaterial || t.material === taskFiltroMaterial;
-      return matchSearch && matchObj && matchMat;
+      // Issue #2: filtro metros mínimo
+      const matchMetros = !taskFiltroMetros || t.metros >= parseInt(taskFiltroMetros);
+      return matchSearch && matchObj && matchMat && matchMetros;
     });
 
     const sorted = [...filtered].sort((a, b) => {
@@ -180,8 +213,10 @@ export default function NuevoWorkoutEditarPage() {
     setFormData({ ...formData, tareaIds: ids });
   };
 
+  // Issue #3: abrir modal editar tarea
   const openEditTareaModal = (tarea: Tarea) => {
-    setEditingTareaInWorkout(tarea);
+    setIsCreatingNewTarea(false);
+    setEditingTarea(tarea);
     setTareaFormData({
       nombre: tarea.nombre,
       objetivo: Array.isArray(tarea.objetivo) ? tarea.objetivo : [tarea.objetivo],
@@ -189,18 +224,53 @@ export default function NuevoWorkoutEditarPage() {
       metros: tarea.metros.toString(),
       descripcion: tarea.descripcion || '',
     });
-    setShowEditTareaModal(true);
+    setShowTareaModal(true);
   };
 
-  const handleSaveTareaInWorkout = () => {
-    if (!editingTareaInWorkout) return;
-    setTareas(tareas.map(t =>
-      t.id === editingTareaInWorkout.id
-        ? { ...t, nombre: tareaFormData.nombre, objetivo: tareaFormData.objetivo, material: tareaFormData.material, metros: parseInt(tareaFormData.metros) || 0, descripcion: tareaFormData.descripcion }
-        : t
-    ));
-    setShowEditTareaModal(false);
-    setEditingTareaInWorkout(null);
+  // Issue #3: abrir modal nueva tarea
+  const openNewTareaModal = () => {
+    setIsCreatingNewTarea(true);
+    setEditingTarea(null);
+    setTareaFormData({ nombre: '', objetivo: [], material: '', metros: '', descripcion: '' });
+    setShowTareaModal(true);
+  };
+
+  // Issue #3: guardar tarea (nueva o editada)
+  const handleSaveTarea = async () => {
+    if (isCreatingNewTarea) {
+      try {
+        const newRef = await addDoc(collection(db, 'tareas'), {
+          nombre: tareaFormData.nombre,
+          objetivo: tareaFormData.objetivo,
+          material: tareaFormData.material,
+          metros: parseInt(tareaFormData.metros) || 0,
+          descripcion: tareaFormData.descripcion,
+        });
+        const newTarea: Tarea = {
+          id: newRef.id,
+          nombre: tareaFormData.nombre,
+          objetivo: tareaFormData.objetivo,
+          material: tareaFormData.material,
+          metros: parseInt(tareaFormData.metros) || 0,
+          descripcion: tareaFormData.descripcion,
+        };
+        setTareas(prev => [...prev, newTarea]);
+        setFormData(prev => ({ ...prev, tareaIds: [...prev.tareaIds, newRef.id] }));
+      } catch (err) {
+        console.error('Error creando tarea:', err);
+        alert('Error al crear la tarea');
+        return;
+      }
+    } else {
+      if (!editingTarea) return;
+      setTareas(prev => prev.map(t =>
+        t.id === editingTarea.id
+          ? { ...t, nombre: tareaFormData.nombre, objetivo: tareaFormData.objetivo, material: tareaFormData.material, metros: parseInt(tareaFormData.metros) || 0, descripcion: tareaFormData.descripcion }
+          : t
+      ));
+    }
+    setShowTareaModal(false);
+    setEditingTarea(null);
   };
 
   const handlePreviewPdf = async () => {
@@ -210,20 +280,15 @@ export default function NuevoWorkoutEditarPage() {
     }
     setGeneratingPdf(true);
     try {
-      const selTareas = tareas.filter(t => formData.tareaIds.includes(t.id));
-      const metros = calculateMetros(formData.tareaIds);
-      const objetivo = calculateObjective(formData.tareaIds);
-      const material = calculateMaterial(formData.tareaIds);
-
-      // Revocar URL anterior si existe
+      // Preservar orden (issue #6 — buena práctica)
+      const selTareas = formData.tareaIds.map(id => tareas.find(t => t.id === id)).filter(Boolean) as Tarea[];
       if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
-
       const blobUrl = await generateWorkoutPDF(
         { titulo: formData.titulo, comentarios: formData.comentarios },
         selTareas,
-        objetivo,
-        material,
-        metros,
+        calculateObjective(formData.tareaIds),
+        calculateMaterial(formData.tareaIds),
+        calculateMetros(formData.tareaIds),
       );
       setPdfPreviewUrl(blobUrl);
       setShowPdfPreview(true);
@@ -235,11 +300,13 @@ export default function NuevoWorkoutEditarPage() {
     }
   };
 
+  // Issue #1: router.push en finally DESPUÉS de setSaving(false)
   const handleSave = async () => {
     if (!formData.titulo.trim()) return;
     setSaving(true);
     try {
-      const selTareas = tareas.filter(t => formData.tareaIds.includes(t.id));
+      // Preservar orden de tareaIds
+      const selTareas = formData.tareaIds.map(id => tareas.find(t => t.id === id)).filter(Boolean) as Tarea[];
       const metros = calculateMetros(formData.tareaIds);
       const objetivo = calculateObjective(formData.tareaIds);
       const material = calculateMaterial(formData.tareaIds);
@@ -252,7 +319,7 @@ export default function NuevoWorkoutEditarPage() {
         metros,
       );
 
-      const newWorkout = await addDoc(collection(db, 'workouts'), {
+      const newDoc = await addDoc(collection(db, 'workouts'), {
         titulo: formData.titulo.trim(),
         objetivo,
         material,
@@ -262,7 +329,7 @@ export default function NuevoWorkoutEditarPage() {
         fecha: new Date().toISOString(),
       });
 
-      // Convertir blob URL → base64 para subir a Storage
+      // Subir PDF a Storage
       const blobResp = await fetch(blobUrl);
       const pdfBlob = await blobResp.blob();
       const arrayBuf = await pdfBlob.arrayBuffer();
@@ -271,25 +338,153 @@ export default function NuevoWorkoutEditarPage() {
       uint8.forEach(b => { binary += String.fromCharCode(b); });
       const pdfBase64 = btoa(binary);
 
-      const pdfRef = ref(storage, `workouts/${newWorkout.id}_workout.pdf`);
+      const pdfRef = ref(storage, `workouts/${newDoc.id}_workout.pdf`);
       await uploadString(pdfRef, pdfBase64, 'base64', { contentType: 'application/pdf' });
       const pdfUrl = await getDownloadURL(pdfRef);
-
-      await updateDoc(doc(db, 'workouts', newWorkout.id), { pdfUrl });
+      await updateDoc(doc(db, 'workouts', newDoc.id), { pdfUrl });
 
       // Descargar localmente
       const link = document.createElement('a');
       link.href = blobUrl;
       link.download = `${formData.titulo.replace(/\s+/g, '_')}_workout.pdf`;
       link.click();
-
       URL.revokeObjectURL(blobUrl);
-      router.push('/entrenador/workouts');
+
+      // Issue #5: Guardar workout y habilitar botón Asignar (NO redirigir)
+      setSavedWorkout({
+        id: newDoc.id,
+        titulo: formData.titulo.trim(),
+        objetivo,
+        material,
+        metros,
+        tareaIds: formData.tareaIds,
+        fecha: new Date().toISOString(),
+        comentarios: formData.comentarios.trim(),
+        pdfUrl,
+      });
     } catch (err) {
       console.error(err);
       setError('Error al guardar el workout');
     } finally {
+      // Issue #1: setSaving(false) primero, luego navegación (si aplica)
       setSaving(false);
+      // En modo nuevo no redirigimos automáticamente — el usuario puede asignar antes
+    }
+  };
+
+  // WhatsApp — Issue #7: pre-computar URLs antes de los awaits
+  const buildWhatsAppMessage = (nombreCliente: string, fechaStr: string, pdfUrl?: string): string => {
+    if (!savedWorkout) return '';
+    const fechaFormateada = new Date(fechaStr).toLocaleDateString('es-ES', {
+      weekday: 'long', day: 'numeric', month: 'long',
+    });
+    let msg =
+      `¡Hola ${nombreCliente}! 🏊 Tienes un nuevo entrenamiento asignado:\n\n` +
+      `*${savedWorkout.titulo}*\n\n` +
+      `📅 Fecha: ${fechaFormateada}\n` +
+      `🎯 Objetivo: ${savedWorkout.objetivo}\n` +
+      `📏 Metros: ${savedWorkout.metros}m\n` +
+      `🎒 Material: ${savedWorkout.material}`;
+    if (assignData.includePdf && pdfUrl) {
+      msg += `\n\n📄 *Descarga tu entrenamiento en PDF:*\n${pdfUrl}`;
+    }
+    msg += `\n\n_VideoAnalisis Natación — Pablo Rodríguez Madurga_`;
+    return msg;
+  };
+
+  const formatPhone = (tel: string): string => {
+    const clean = tel.replace(/[\s\-().]/g, '');
+    if (!clean) return '';
+    if (clean.startsWith('+')) return clean;
+    if (clean.startsWith('00')) return '+' + clean.slice(2);
+    if (/^[6789]\d{8}$/.test(clean)) return '+34' + clean;
+    return clean;
+  };
+
+  const getClientesDelGrupo = (grupoId: string) => {
+    const grupo = grupos.find(g => g.id === grupoId);
+    if (!grupo || !grupo.clienteIds) return [];
+    return clientes.filter(c => grupo.clienteIds.includes(c.id));
+  };
+
+  // Issue #7: iOS Safari fix — construir URLs ANTES de los awaits
+  const handleAssign = async () => {
+    if (!savedWorkout || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha) return;
+
+    setAssignLoading(true);
+    try {
+      const asignacionesRef = collection(db, 'asignaciones');
+      const pdfUrl = savedWorkout.pdfUrl;
+
+      if (assignData.clienteId) {
+        // Pre-computar URL ANTES del await
+        const cliente = clientes.find(c => c.id === assignData.clienteId);
+        const nombreCompleto = cliente ? `${cliente.nombre} ${cliente.apellido}` : 'Nadador/a';
+        const msg = buildWhatsAppMessage(nombreCompleto, assignData.fecha, pdfUrl);
+        const tel = formatPhone(cliente?.telefono || '');
+        const waUrl = tel
+          ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
+          : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+        // Abrir WhatsApp ANTES del await — fix iOS Safari
+        window.open(waUrl, '_blank');
+
+        await addDoc(asignacionesRef, {
+          workoutId: savedWorkout.id,
+          clienteId: assignData.clienteId,
+          grupoId: null,
+          fechaAsignada: assignData.fecha,
+          estado: 'pendiente',
+        });
+      } else if (assignData.grupoId) {
+        const grupo = grupos.find(g => g.id === assignData.grupoId);
+        const clientesDelGrupo = getClientesDelGrupo(assignData.grupoId);
+        const clientesConTel = clientesDelGrupo.filter(c => c.telefono?.trim());
+        const clientesSinTel = clientesDelGrupo.filter(c => !c.telefono?.trim());
+
+        // Pre-computar todas las URLs ANTES de los awaits
+        let waUrls: string[] = [];
+        if (clientesConTel.length === 0) {
+          const msg = buildWhatsAppMessage(grupo?.nombre || 'grupo', assignData.fecha, pdfUrl);
+          waUrls = [`https://wa.me/?text=${encodeURIComponent(msg)}`];
+        } else {
+          waUrls = clientesConTel.map(cliente => {
+            const nombreCompleto = `${cliente.nombre} ${cliente.apellido}`;
+            const msg = buildWhatsAppMessage(nombreCompleto, assignData.fecha, pdfUrl);
+            const tel = formatPhone(cliente.telefono!);
+            return `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`;
+          });
+        }
+
+        // Guardar asignaciones
+        for (const cliente of clientesDelGrupo) {
+          await addDoc(asignacionesRef, {
+            workoutId: savedWorkout.id,
+            clienteId: cliente.id,
+            grupoId: assignData.grupoId,
+            fechaAsignada: assignData.fecha,
+            estado: 'pendiente',
+          });
+        }
+
+        // Abrir WhatsApp con setTimeout escalonado
+        waUrls.forEach((url, idx) => {
+          setTimeout(() => window.open(url, '_blank'), idx * 600);
+        });
+
+        if (clientesSinTel.length > 0) {
+          const nombres = clientesSinTel.map(c => `${c.nombre} ${c.apellido}`).join(', ');
+          alert(`⚠️ Sin teléfono registrado:\n${nombres}`);
+        }
+      }
+
+      setShowAssignModal(false);
+      setAssignData({ grupoId: '', clienteId: '', fecha: new Date().toISOString().split('T')[0], includePdf: false });
+    } catch (err) {
+      console.error('Error assigning workout:', err);
+      setError('Error al asignar el workout');
+    } finally {
+      setAssignLoading(false);
     }
   };
 
@@ -302,6 +497,7 @@ export default function NuevoWorkoutEditarPage() {
   }
 
   const { sorted: filteredTareas, recommendedObjectives } = getFilteredAndSortedTareas();
+  // Preservar orden de tareaIds (issue #6)
   const selectedTareas = formData.tareaIds.map(id => tareas.find(t => t.id === id)).filter(Boolean) as Tarea[];
 
   return (
@@ -320,20 +516,46 @@ export default function NuevoWorkoutEditarPage() {
             <p className="text-ocean-600">Crea un nuevo entrenamiento</p>
           </div>
         </div>
+        {/* Issue #4: solo icono */}
         <div className="flex gap-2">
           <button
             onClick={handlePreviewPdf}
             disabled={generatingPdf || formData.tareaIds.length === 0 || !formData.titulo.trim()}
-            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+            title="Previsualizar PDF"
+            className="p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
           >
-            {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
-            Previsualizar PDF
+            {generatingPdf ? <Loader2 className="w-5 h-5 animate-spin" /> : <Eye className="w-5 h-5" />}
           </button>
+          {/* Issue #5: botón Asignar visible solo después de guardar */}
+          {savedWorkout && (
+            <button
+              onClick={() => setShowAssignModal(true)}
+              title="Asignar workout"
+              className="p-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </div>
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
+      )}
+
+      {/* Banner post-guardado */}
+      {savedWorkout && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-center justify-between">
+          <p className="text-green-700 text-sm font-medium">
+            ✅ Workout guardado. Puedes asignarlo ahora usando el botón <Send className="inline w-3 h-3" /> o volver al listado.
+          </p>
+          <button
+            onClick={() => router.push('/entrenador/workouts')}
+            className="text-sm text-green-600 hover:text-green-800 underline ml-4 flex-shrink-0"
+          >
+            Ir al listado
+          </button>
+        </div>
       )}
 
       {/* Formulario */}
@@ -416,21 +638,32 @@ export default function NuevoWorkoutEditarPage() {
             <label className="block text-sm font-medium text-ocean-700">
               Banco de Tareas ({filteredTareas.length} disponibles)
             </label>
-            {recommendedObjectives.length > 0 && (
-              <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">
-                Recomendadas: {recommendedObjectives.join(', ')}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {recommendedObjectives.length > 0 && (
+                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">
+                  ✨ {recommendedObjectives.join(', ')}
+                </span>
+              )}
+              {/* Issue #3: Botón nueva tarea */}
+              <button
+                onClick={openNewTareaModal}
+                title="Crear nueva tarea en el banco"
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
+              >
+                <Plus className="w-3 h-3" />
+                Nueva tarea
+              </button>
+            </div>
           </div>
 
-          {/* Filtros */}
+          {/* Filtros — Issue #2: input metros */}
           <div className="flex flex-wrap gap-2 mb-3">
             <input
               type="text"
               placeholder="Buscar tarea..."
               value={taskSearch}
               onChange={(e) => setTaskSearch(e.target.value)}
-              className="flex-1 min-w-[150px] px-3 py-2 border border-ocean-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              className="flex-1 min-w-[140px] px-3 py-2 border border-ocean-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ocean-500"
             />
             <select
               value={taskFiltroObjetivo}
@@ -448,6 +681,14 @@ export default function NuevoWorkoutEditarPage() {
               <option value="">Material</option>
               {materialOpciones.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
+            <input
+              type="number"
+              placeholder="Metros mín."
+              value={taskFiltroMetros}
+              onChange={(e) => setTaskFiltroMetros(e.target.value)}
+              className="w-28 px-3 py-2 border border-ocean-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              min="0"
+            />
           </div>
 
           <div className="max-h-72 overflow-y-auto border border-ocean-200 rounded-lg">
@@ -517,34 +758,45 @@ export default function NuevoWorkoutEditarPage() {
           />
         </div>
 
-        {/* Botón guardar */}
-        <button
-          onClick={handleSave}
-          disabled={saving || !formData.titulo.trim()}
-          className="w-full flex items-center justify-center gap-2 py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-          {saving ? 'Guardando...' : 'Guardar Workout'}
-        </button>
+        {/* Botón guardar — oculto si ya se guardó */}
+        {!savedWorkout && (
+          <button
+            onClick={handleSave}
+            disabled={saving || !formData.titulo.trim()}
+            className="w-full flex items-center justify-center gap-2 py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Guardando...' : 'Guardar Workout'}
+          </button>
+        )}
       </div>
 
-      {/* Modal editar tarea */}
-      {showEditTareaModal && editingTareaInWorkout && (
+      {/* Modal crear / editar tarea (Issue #3) */}
+      {showTareaModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-ocean-800">Editar Tarea</h2>
-              <button onClick={() => setShowEditTareaModal(false)} className="text-ocean-400 hover:text-ocean-600">
+              <h2 className="text-lg font-bold text-ocean-800">
+                {isCreatingNewTarea ? 'Nueva Tarea' : 'Editar Tarea'}
+              </h2>
+              <button onClick={() => setShowTareaModal(false)} className="text-ocean-400 hover:text-ocean-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
+            {isCreatingNewTarea && (
+              <p className="text-xs text-ocean-500 bg-ocean-50 rounded-lg px-3 py-2">
+                La tarea se guardará en el banco de tareas y se añadirá automáticamente al workout.
+              </p>
+            )}
+
             <div>
-              <label className="block text-sm font-medium text-ocean-700 mb-1">Nombre</label>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Nombre *</label>
               <textarea
                 value={tareaFormData.nombre}
                 onChange={(e) => setTareaFormData({ ...tareaFormData, nombre: e.target.value })}
                 rows={2}
+                placeholder="Descripción del ejercicio..."
                 className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
               />
             </div>
@@ -580,6 +832,7 @@ export default function NuevoWorkoutEditarPage() {
                   value={tareaFormData.metros}
                   onChange={(e) => setTareaFormData({ ...tareaFormData, metros: e.target.value })}
                   className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  min="0"
                 />
               </div>
               <div>
@@ -601,24 +854,157 @@ export default function NuevoWorkoutEditarPage() {
                 value={tareaFormData.descripcion}
                 onChange={(e) => setTareaFormData({ ...tareaFormData, descripcion: e.target.value })}
                 rows={3}
+                placeholder="Notas adicionales..."
                 className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
               />
             </div>
 
             <div className="flex gap-2">
               <button
-                onClick={() => setShowEditTareaModal(false)}
+                onClick={() => setShowTareaModal(false)}
                 className="flex-1 py-2 border border-ocean-200 text-ocean-600 rounded-lg hover:bg-ocean-50"
               >
                 Cancelar
               </button>
               <button
-                onClick={handleSaveTareaInWorkout}
-                className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
+                onClick={handleSaveTarea}
+                disabled={!tareaFormData.nombre.trim()}
+                className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50"
               >
-                Guardar Tarea
+                {isCreatingNewTarea ? 'Crear y añadir' : 'Guardar cambios'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de asignación */}
+      {showAssignModal && savedWorkout && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ocean-800">Asignar Workout</h2>
+              <button onClick={() => setShowAssignModal(false)} className="text-ocean-400 hover:text-ocean-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Grupo */}
+            <div>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Grupo</label>
+              <select
+                value={assignData.grupoId}
+                onChange={(e) => setAssignData({ ...assignData, grupoId: e.target.value, clienteId: '' })}
+                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              >
+                <option value="">Seleccionar grupo...</option>
+                {grupos.map(g => {
+                  const n = getClientesDelGrupo(g.id).length;
+                  const conTel = getClientesDelGrupo(g.id).filter(c => c.telefono?.trim()).length;
+                  return (
+                    <option key={g.id} value={g.id}>
+                      {g.nombre} ({n} cliente{n !== 1 ? 's' : ''}, {conTel} con teléfono)
+                    </option>
+                  );
+                })}
+              </select>
+              {assignData.grupoId && (
+                <div className="mt-2 max-h-32 overflow-y-auto space-y-1">
+                  {getClientesDelGrupo(assignData.grupoId).map(c => (
+                    <div key={c.id} className="flex items-center justify-between text-xs bg-ocean-50 rounded px-2 py-1">
+                      <span className="text-ocean-700 font-medium">{c.nombre} {c.apellido}</span>
+                      {c.telefono?.trim()
+                        ? <span className="text-green-600">📱 {c.telefono}</span>
+                        : <span className="text-red-400">Sin teléfono</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 text-ocean-400 text-xs">
+              <div className="flex-1 h-px bg-ocean-100" />
+              <span>o</span>
+              <div className="flex-1 h-px bg-ocean-100" />
+            </div>
+
+            {/* Cliente específico */}
+            <div>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Cliente específico</label>
+              <select
+                value={assignData.clienteId}
+                onChange={(e) => setAssignData({ ...assignData, clienteId: e.target.value, grupoId: '' })}
+                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              >
+                <option value="">Seleccionar cliente...</option>
+                {clientes.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.nombre} {c.apellido}{c.telefono ? ` — ${c.telefono}` : ' — sin teléfono'}
+                  </option>
+                ))}
+              </select>
+              {assignData.clienteId && (() => {
+                const sel = clientes.find(c => c.id === assignData.clienteId);
+                return sel ? (
+                  <div className={`mt-2 flex items-center gap-2 text-xs rounded-lg px-3 py-2 ${sel.telefono?.trim() ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+                    {sel.telefono?.trim()
+                      ? <>📱 WhatsApp a <strong>{formatPhone(sel.telefono)}</strong></>
+                      : <>⚠️ Sin teléfono — se abrirá WhatsApp Web sin destinatario</>}
+                  </div>
+                ) : null;
+              })()}
+            </div>
+
+            {/* Fecha */}
+            <div>
+              <label className="block text-sm font-medium text-ocean-700 mb-1">Fecha del entrenamiento</label>
+              <input
+                type="date"
+                value={assignData.fecha}
+                onChange={(e) => setAssignData({ ...assignData, fecha: e.target.value })}
+                className="w-full px-3 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+              />
+            </div>
+
+            {/* PDF */}
+            <div className={`rounded-lg border p-3 ${assignData.includePdf ? 'border-ocean-300 bg-ocean-50' : 'border-ocean-100 bg-gray-50'}`}>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={assignData.includePdf}
+                  onChange={(e) => setAssignData({ ...assignData, includePdf: e.target.checked })}
+                  className="w-4 h-4 rounded border-ocean-300 text-ocean-600"
+                />
+                <div>
+                  <p className="text-sm font-medium text-ocean-700">Incluir enlace de descarga del PDF</p>
+                  <p className="text-xs text-ocean-500 mt-0.5">
+                    {savedWorkout.pdfUrl
+                      ? 'Se adjuntará el enlace en el mensaje de WhatsApp'
+                      : 'No hay PDF generado'}
+                  </p>
+                </div>
+              </label>
+              {assignData.includePdf && savedWorkout.pdfUrl && (
+                <div className="mt-2 text-xs text-ocean-500 bg-white rounded px-2 py-1 border border-ocean-200 truncate">
+                  🔗 {savedWorkout.pdfUrl}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={handleAssign}
+              disabled={assignLoading || (!assignData.grupoId && !assignData.clienteId) || !assignData.fecha}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium"
+            >
+              {assignLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {assignLoading ? 'Asignando...' : 'Asignar y enviar por WhatsApp'}
+            </button>
+
+            {assignData.grupoId && getClientesDelGrupo(assignData.grupoId).filter(c => c.telefono?.trim()).length > 1 && (
+              <p className="text-xs text-center text-ocean-400">
+                Se abrirá una ventana de WhatsApp por cada cliente con teléfono registrado.
+              </p>
+            )}
           </div>
         </div>
       )}
