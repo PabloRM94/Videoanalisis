@@ -28,6 +28,7 @@ interface Cliente {
 interface Grupo {
   id: string;
   nombre: string;
+  clienteIds?: string[];
 }
 
 const objetivosMap: Record<string, string> = {
@@ -88,7 +89,19 @@ export default function EntrenadorClientesPage() {
         const gruposData = gruposSnap.docs.map(doc => ({
           id: doc.id,
           nombre: doc.data().nombre,
+          clienteIds: doc.data().clienteIds || [],
         }));
+
+        // Migrate: Si un grupo no tiene clienteIds, lo inicializamos
+        for (const grupoDoc of gruposSnap.docs) {
+          if (!grupoDoc.data().clienteIds) {
+            await updateDoc(doc(db, 'grupos', grupoDoc.id), {
+              clienteIds: [],
+            });
+            console.log(`Migrated grupo ${grupoDoc.id}: added clienteIds = []`);
+          }
+        }
+        
         setGrupos(gruposData);
 
         // No seleccionar grupo por defecto - mostrar todos
@@ -146,11 +159,11 @@ export default function EntrenadorClientesPage() {
       const gruposRef = collection(db, 'grupos');
       const newGrupo = await addDoc(gruposRef, {
         nombre: newGrupoNombre.trim(),
-        // Grupos compartidos entre todos los trainers
+        clienteIds: [],
         createdAt: serverTimestamp(),
       });
 
-      setGrupos([...grupos, { id: newGrupo.id, nombre: newGrupoNombre.trim() }]);
+      setGrupos([...grupos, { id: newGrupo.id, nombre: newGrupoNombre.trim(), clienteIds: [] }]);
       setSelectedGrupo(newGrupo.id);
       setNewGrupoNombre('');
       setShowCreateGrupo(false);
@@ -161,10 +174,44 @@ export default function EntrenadorClientesPage() {
 
   const updateClienteGrupo = async (clienteId: string, grupoId: string) => {
     try {
+      // Obtener el cliente actual para saber su grupo anterior
+      const clienteActual = clientes.find(c => c.id === clienteId);
+      const grupoAnteriorId = clienteActual?.grupoId;
+
+      // 1. Actualizar el cliente
       await updateDoc(doc(db, 'users', clienteId), {
         grupoId,
       });
 
+      // 2. Si tenía grupo anterior, quitarle el clienteId
+      if (grupoAnteriorId && grupoAnteriorId !== grupoId) {
+        const grupoAnterior = grupos.find(g => g.id === grupoAnteriorId);
+        if (grupoAnterior && grupoAnterior.clienteIds) {
+          const nuevosClienteIds = grupoAnterior.clienteIds.filter(id => id !== clienteId);
+          await updateDoc(doc(db, 'grupos', grupoAnteriorId), {
+            clienteIds: nuevosClienteIds,
+          });
+          // Actualizar estado local
+          setGrupos(grupos.map(g => 
+            g.id === grupoAnteriorId ? { ...g, clienteIds: nuevosClienteIds } : g
+          ));
+        }
+      }
+
+      // 3. Agregar clienteId al nuevo grupo
+      if (grupoId) {
+        const grupoNuevo = grupos.find(g => g.id === grupoId);
+        const nuevosClienteIds = [...(grupoNuevo?.clienteIds || []), clienteId];
+        await updateDoc(doc(db, 'grupos', grupoId), {
+          clienteIds: nuevosClienteIds,
+        });
+        // Actualizar estado local
+        setGrupos(grupos.map(g => 
+          g.id === grupoId ? { ...g, clienteIds: nuevosClienteIds } : g
+        ));
+      }
+
+      // 4. Actualizar estado local de clientes
       setClientes(clientes.map(c => 
         c.id === clienteId ? { ...c, grupoId } : c
       ));

@@ -15,6 +15,7 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { Dumbbell, Plus, Search, Edit, Trash2, X, Save, LayoutGrid, List } from 'lucide-react';
+import Link from 'next/link';
 
 interface Tarea {
   id: string;
@@ -385,12 +386,12 @@ export default function EntrenadorTareasPage() {
                     <td className="px-4 py-3 text-sm text-ocean-600">{tarea.material || '-'}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex gap-1 justify-end">
-                        <button
-                          onClick={() => openEdit(tarea)}
+                        <Link
+                          href={`/entrenador/tareas/${tarea.id}/editar`}
                           className="p-1.5 text-ocean-400 hover:text-ocean-600 hover:bg-ocean-50 rounded"
                         >
                           <Edit className="w-4 h-4" />
-                        </button>
+                        </Link>
                         <button
                           onClick={() => deleteTarea(tarea.id)}
                           className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"
@@ -415,12 +416,12 @@ export default function EntrenadorTareasPage() {
               <div className="flex items-start justify-between mb-3">
                 <h3 className="font-semibold text-ocean-800 whitespace-pre-wrap">{tarea.nombre}</h3>
                 <div className="flex gap-1">
-                  <button
-                    onClick={() => openEdit(tarea)}
+                  <Link
+                    href={`/entrenador/tareas/${tarea.id}/editar`}
                     className="p-1.5 text-ocean-400 hover:text-ocean-600 hover:bg-ocean-50 rounded"
                   >
                     <Edit className="w-4 h-4" />
-                  </button>
+                  </Link>
                   <button
                     onClick={() => deleteTarea(tarea.id)}
                     className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"
