@@ -37,3 +37,6 @@ next-env.d.ts
 
 # Large media files
 public/Videos/
+
+# Scripts with credentials
+scripts/
