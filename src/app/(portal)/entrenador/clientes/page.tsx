@@ -72,10 +72,19 @@ export default function EntrenadorClientesPage() {
   
   // Estado para asignar workout
   const [assigningWorkout, setAssigningWorkout] = useState<Cliente | null>(null);
-  const [workouts, setWorkouts] = useState<any[]>([]);
+  const [workouts, setWorkouts] = useState<{
+    id: string;
+    titulo: string;
+    fecha: string;
+    objetivo: string;
+    metros: number;
+    material: string;
+    pdfUrl?: string;
+  }[]>([]);
   const [selectedWorkoutId, setSelectedWorkoutId] = useState('');
   const [assignDate, setAssignDate] = useState('');
   const [assigningLoading, setAssigningLoading] = useState(false);
+  const [assignIncludePdf, setAssignIncludePdf] = useState(false);
   
   // Estado para mostrar historial
   const [verHistorial, setVerHistorial] = useState<Cliente | null>(null);
@@ -147,6 +156,10 @@ export default function EntrenadorClientesPage() {
           id: doc.id,
           titulo: doc.data().titulo || '',
           fecha: doc.data().fecha || '',
+          objetivo: doc.data().objetivo || '',
+          metros: doc.data().metros || 0,
+          material: doc.data().material || '',
+          pdfUrl: doc.data().pdfUrl || '',
         }));
         setWorkouts(workoutsData);
 
@@ -345,12 +358,60 @@ export default function EntrenadorClientesPage() {
     }
   };
 
-  // Asignar workout a cliente
+  // Limpia y normaliza número de teléfono para wa.me
+  const formatPhone = (tel: string): string => {
+    const clean = tel.replace(/[\s\-().]/g, '');
+    if (!clean) return '';
+    if (clean.startsWith('+')) return clean;
+    if (clean.startsWith('00')) return '+' + clean.slice(2);
+    if (/^[6789]\d{8}$/.test(clean)) return '+34' + clean;
+    return clean;
+  };
+
+  // Construye el mensaje de WhatsApp para un cliente
+  const buildWhatsAppMessage = (nombreCliente: string, w: typeof workouts[0], fechaStr: string): string => {
+    const fechaFormateada = new Date(fechaStr).toLocaleDateString('es-ES', {
+      weekday: 'long', day: 'numeric', month: 'long',
+    });
+    let msg =
+      `¡Hola ${nombreCliente}! 🏊 Tienes un nuevo entrenamiento asignado:\n\n` +
+      `*${w.titulo}*\n\n` +
+      `📅 Fecha: ${fechaFormateada}\n` +
+      `🎯 Objetivo: ${w.objetivo}\n` +
+      `📏 Metros: ${w.metros}m\n` +
+      `🎒 Material: ${w.material}`;
+
+    if (assignIncludePdf && w.pdfUrl) {
+      msg += `\n\n📄 *Descarga tu entrenamiento en PDF:*\n${w.pdfUrl}`;
+    }
+
+    msg += `\n\n_VideoAnalisis Natación — Pablo Rodríguez Madurga_`;
+    return msg;
+  };
+
+  // Asignar workout a cliente (con WhatsApp + PDF)
   const assignWorkoutToCliente = async () => {
     if (!assigningWorkout || !selectedWorkoutId || !assignDate) return;
-    
+
+    const workout = workouts.find(w => w.id === selectedWorkoutId);
+    if (!workout) return;
+
     setAssigningLoading(true);
     try {
+      // Fix iOS Safari: pre-computar URL ANTES del await
+      const nombreCompleto = assigningWorkout.nombre;
+      const msg = buildWhatsAppMessage(nombreCompleto, workout, assignDate);
+      const tel = formatPhone(assigningWorkout.telefono || '');
+      const waUrl = tel
+        ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
+        : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+      // Abrir WhatsApp ANTES del await — fix iOS Safari
+      if (assigningWorkout.telefono?.trim()) {
+        window.open(waUrl, '_blank');
+      }
+
+      // Guardar en Firestore DESPUÉS
       await addDoc(collection(db, 'asignaciones'), {
         workoutId: selectedWorkoutId,
         clienteId: assigningWorkout.id,
@@ -359,11 +420,11 @@ export default function EntrenadorClientesPage() {
         estado: 'pendiente',
         createdAt: serverTimestamp(),
       });
-      
-      alert(`Workout asignado a ${assigningWorkout.nombre}`);
+
       setAssigningWorkout(null);
       setSelectedWorkoutId('');
       setAssignDate('');
+      setAssignIncludePdf(false);
     } catch (error) {
       console.error('Error assigning workout:', error);
     } finally {
@@ -951,7 +1012,11 @@ export default function EntrenadorClientesPage() {
                 <label className="block text-sm font-medium text-ocean-700 mb-2">Workout</label>
                 <select
                   value={selectedWorkoutId}
-                  onChange={(e) => setSelectedWorkoutId(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedWorkoutId(e.target.value);
+                    const w = workouts.find(w => w.id === e.target.value);
+                    setAssignIncludePdf(!!w?.pdfUrl);
+                  }}
                   className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
                 >
                   <option value="">Seleccionar...</option>
@@ -960,6 +1025,14 @@ export default function EntrenadorClientesPage() {
                   ))}
                 </select>
               </div>
+
+              {/* Preview teléfono cliente */}
+              {assigningWorkout.telefono?.trim() && (
+                <div className="flex items-center gap-2 text-xs bg-green-50 text-green-700 rounded-lg px-3 py-2">
+                  📱 WhatsApp a <strong>{formatPhone(assigningWorkout.telefono)}</strong>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-ocean-700 mb-2">Fecha</label>
                 <input
@@ -969,13 +1042,35 @@ export default function EntrenadorClientesPage() {
                   className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
                 />
               </div>
+
+              {/* PDF checkbox */}
+              {selectedWorkoutId && (() => {
+                const w = workouts.find(w => w.id === selectedWorkoutId);
+                return w?.pdfUrl ? (
+                  <div className={`rounded-lg border p-3 ${assignIncludePdf ? 'border-ocean-300 bg-ocean-50' : 'border-ocean-100 bg-gray-50'}`}>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={assignIncludePdf}
+                        onChange={(e) => setAssignIncludePdf(e.target.checked)}
+                        className="w-4 h-4 rounded border-ocean-300 text-ocean-600"
+                      />
+                      <div>
+                        <p className="text-sm font-medium text-ocean-700">Incluir enlace de descarga del PDF</p>
+                        <p className="text-xs text-ocean-500 mt-0.5">Se adjuntará el enlace en el mensaje de WhatsApp</p>
+                      </div>
+                    </label>
+                  </div>
+                ) : null;
+              })()}
+
               <button
                 onClick={assignWorkoutToCliente}
                 disabled={assigningLoading || !selectedWorkoutId || !assignDate}
-                className="w-full py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                {assigningLoading && <Loader2 className="w-5 h-5 animate-spin" />}
-                Asignar
+                {assigningLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                {assigningLoading ? 'Asignando...' : 'Asignar y enviar por WhatsApp'}
               </button>
             </div>
           </div>

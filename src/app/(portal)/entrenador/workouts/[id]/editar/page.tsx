@@ -44,8 +44,13 @@ interface Cliente {
 }
 
 const objetivosOpciones = [
-  'CLNT', 'TEC', 'AEL', 'AEM', 'AEI', 'VEL', 'REST', 'ANA', 'PAL', 'PLAC', 'CAL', 'CLAC', 'INI', 'FUER'
+  'CLNT', 'TEC', 'AEL', 'AEM', 'AEI', 'VEL', 'REST', 'ANA', 'PAL', 'PLAC', 'CAL', 'CLAC', 'INI', 'CROSS', 'FUER'
 ];
+
+const MATERIAL_ALIASES: Record<string, string> = {
+  'pull': 'Pullboy', 'Pull': 'Pullboy', 'pullboy': 'Pullboy', 'pull boy': 'Pullboy', 'Pull boy': 'Pullboy',
+};
+const normalizeMaterial = (m: string): string => MATERIAL_ALIASES[m.trim()] ?? m;
 
 const materialOpciones = [
   'Tabla', 'Aletas', 'Pullboy', 'Churumbela', 'Bola', 'Cuerda', 'Pletinas', 'Nadador', 'Otro', 'Sin material'
@@ -630,7 +635,11 @@ export default function EditarWorkoutPage() {
           {/* Asignar: visible si es modo edición existente O si ya se guardó el nuevo */}
           {(!isNewMode || savedWorkoutId) && (
             <button
-              onClick={() => setShowAssignModal(true)}
+              onClick={() => {
+                const w = savedWorkoutData || workout;
+                setAssignData(prev => ({ ...prev, includePdf: !!w?.pdfUrl }));
+                setShowAssignModal(true);
+              }}
               title="Asignar workout"
               className="p-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
             >

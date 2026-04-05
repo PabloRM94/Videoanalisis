@@ -40,8 +40,14 @@ const objetivosOpciones = [
   'CAL',
   'CLAC',
   'INI',
+  'CROSS',
   'FUER',
 ];
+
+const MATERIAL_ALIASES: Record<string, string> = {
+  'pull': 'Pullboy', 'Pull': 'Pullboy', 'pullboy': 'Pullboy', 'pull boy': 'Pullboy', 'Pull boy': 'Pullboy',
+};
+const normalizeMaterial = (m: string): string => MATERIAL_ALIASES[m.trim()] ?? m;
 
 const materialOpciones = [
   'Tabla',

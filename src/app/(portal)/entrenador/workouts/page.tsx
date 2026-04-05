@@ -37,6 +37,7 @@ interface Workout {
   material: string;
   metros: number;
   tareaIds: string[];
+  pdfUrl?: string;
 }
 
 interface Grupo {
@@ -68,8 +69,18 @@ const objetivosOpciones = [
   'CAL',
   'CLAC',
   'INI',
+  'CROSS',
   'FUER',
 ];
+
+const MATERIAL_ALIASES: Record<string, string> = {
+  'pull':     'Pullboy',
+  'Pull':     'Pullboy',
+  'pullboy':  'Pullboy',
+  'pull boy': 'Pullboy',
+  'Pull boy': 'Pullboy',
+};
+const normalizeMaterial = (m: string): string => MATERIAL_ALIASES[m.trim()] ?? m;
 
 const materialOpciones = [
   'Tabla',
@@ -619,7 +630,7 @@ export default function EntrenadorWorkoutsPage() {
       grupoId: '',
       clienteId: '',
       fecha: new Date().toISOString().split('T')[0],
-      includePdf: false,
+      includePdf: !!workout.pdfUrl,
     });
     setShowAssignModal(true);
   };
@@ -670,6 +681,19 @@ export default function EntrenadorWorkoutsPage() {
 
       // ── Cliente individual ─────────────────────────────────────────────────
       if (assignData.clienteId) {
+        // Fix iOS Safari: pre-computar URL ANTES del await
+        const cliente = clientes.find(c => c.id === assignData.clienteId);
+        const nombre = cliente ? `${cliente.nombre} ${cliente.apellido}` : 'Nadador/a';
+        const msg = buildWhatsAppMessage(nombre, selectedWorkout);
+        const tel = formatPhone(cliente?.telefono || '');
+        const waUrl = tel
+          ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
+          : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+        // Abrir WhatsApp ANTES del await — fix iOS Safari
+        window.open(waUrl, '_blank');
+
+        // Guardar en Firestore DESPUÉS
         const newAsig = await addDoc(asignacionesRef, {
           workoutId: selectedWorkout.id,
           clienteId: assignData.clienteId,
@@ -686,21 +710,30 @@ export default function EntrenadorWorkoutsPage() {
           fechaAsignada: assignData.fecha,
           estado: 'pendiente',
         }]);
-
-        const cliente = clientes.find(c => c.id === assignData.clienteId);
-        const nombre = cliente ? `${cliente.nombre} ${cliente.apellido}` : 'Nadador/a';
-        const msg = buildWhatsAppMessage(nombre, selectedWorkout);
-        const tel = formatPhone(cliente?.telefono || '');
-        const waUrl = tel
-          ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`
-          : `https://wa.me/?text=${encodeURIComponent(msg)}`;
-        window.open(waUrl, '_blank');
       }
 
       // ── Grupo completo ─────────────────────────────────────────────────────
       else if (assignData.grupoId) {
         const clientesDelGrupo = getClientesDelGrupo(assignData.grupoId);
+        const clientesConTel = clientesDelGrupo.filter(c => c.telefono?.trim());
+        const clientesSinTel  = clientesDelGrupo.filter(c => !c.telefono?.trim());
+        const grupo = grupos.find(g => g.id === assignData.grupoId);
 
+        // Pre-computar TODAS las URLs ANTES de los awaits — fix iOS Safari
+        let waUrls: string[] = [];
+        if (clientesConTel.length === 0) {
+          const msg = buildWhatsAppMessage(grupo?.nombre || 'grupo', selectedWorkout);
+          waUrls = [`https://wa.me/?text=${encodeURIComponent(msg)}`];
+        } else {
+          waUrls = clientesConTel.map(cliente => {
+            const nombre = `${cliente.nombre} ${cliente.apellido}`;
+            const msg = buildWhatsAppMessage(nombre, selectedWorkout);
+            const tel = formatPhone(cliente.telefono!);
+            return `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`;
+          });
+        }
+
+        // Guardar asignaciones en Firestore primero
         for (const cliente of clientesDelGrupo) {
           const newAsig = await addDoc(asignacionesRef, {
             workoutId: selectedWorkout.id,
@@ -720,27 +753,14 @@ export default function EntrenadorWorkoutsPage() {
           }]);
         }
 
-        const clientesConTel = clientesDelGrupo.filter(c => c.telefono?.trim());
-        const clientesSinTel  = clientesDelGrupo.filter(c => !c.telefono?.trim());
-        const grupo = grupos.find(g => g.id === assignData.grupoId);
+        // Abrir WhatsApp después con setTimeout escalonado
+        waUrls.forEach((url, idx) => {
+          setTimeout(() => window.open(url, '_blank'), idx * 600);
+        });
 
-        if (clientesConTel.length === 0) {
-          const msg = buildWhatsAppMessage(grupo?.nombre || 'grupo', selectedWorkout);
-          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-        } else {
-          clientesConTel.forEach((cliente, idx) => {
-            const nombre = `${cliente.nombre} ${cliente.apellido}`;
-            const msg = buildWhatsAppMessage(nombre, selectedWorkout);
-            const tel = formatPhone(cliente.telefono!);
-            setTimeout(() => {
-              window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank');
-            }, idx * 600);
-          });
-
-          if (clientesSinTel.length > 0) {
-            const nombres = clientesSinTel.map(c => `${c.nombre} ${c.apellido}`).join(', ');
-            alert(`⚠️ Sin teléfono (no recibirán WhatsApp):\n${nombres}`);
-          }
+        if (clientesSinTel.length > 0) {
+          const nombres = clientesSinTel.map(c => `${c.nombre} ${c.apellido}`).join(', ');
+          alert(`⚠️ Sin teléfono (no recibirán WhatsApp):\n${nombres}`);
         }
       }
 

@@ -48,8 +48,13 @@ interface SavedWorkout {
 }
 
 const objetivosOpciones = [
-  'CLNT', 'TEC', 'AEL', 'AEM', 'AEI', 'VEL', 'REST', 'ANA', 'PAL', 'PLAC', 'CAL', 'CLAC', 'INI', 'FUER'
+  'CLNT', 'TEC', 'AEL', 'AEM', 'AEI', 'VEL', 'REST', 'ANA', 'PAL', 'PLAC', 'CAL', 'CLAC', 'INI', 'CROSS', 'FUER'
 ];
+
+const MATERIAL_ALIASES: Record<string, string> = {
+  'pull': 'Pullboy', 'Pull': 'Pullboy', 'pullboy': 'Pullboy', 'pull boy': 'Pullboy', 'Pull boy': 'Pullboy',
+};
+const normalizeMaterial = (m: string): string => MATERIAL_ALIASES[m.trim()] ?? m;
 
 const materialOpciones = [
   'Tabla', 'Aletas', 'Pullboy', 'Churumbela', 'Bola', 'Cuerda', 'Pletinas', 'Nadador', 'Otro', 'Sin material'
@@ -529,7 +534,10 @@ export default function NuevoWorkoutEditarPage() {
           {/* Issue #5: botón Asignar visible solo después de guardar */}
           {savedWorkout && (
             <button
-              onClick={() => setShowAssignModal(true)}
+              onClick={() => {
+                setAssignData(prev => ({ ...prev, includePdf: !!savedWorkout?.pdfUrl }));
+                setShowAssignModal(true);
+              }}
               title="Asignar workout"
               className="p-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
             >
