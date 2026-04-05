@@ -12,7 +12,8 @@ import {
   Menu, 
   X,
   Dumbbell,
-  UserPlus
+  UserPlus,
+  Timer
 } from 'lucide-react';
 
 const clienteNavItems = [
@@ -26,6 +27,7 @@ const entrenadorNavItems = [
   { href: '/entrenador/clientes', label: 'Clientes', icon: Dumbbell },
   { href: '/entrenador/tareas', label: 'Banco de Tareas', icon: Dumbbell },
   { href: '/entrenador/workouts', label: 'Workouts', icon: Calendar },
+  { href: '/entrenador/cronometro', label: 'Cronómetro', icon: Timer },
   { href: '/entrenador/invitaciones', label: 'Invitaciones', icon: UserPlus },
 ];
 
