@@ -83,16 +83,16 @@ interface IntermediateTime {
   esReal: boolean;
 }
 
-function calcularIntermedios(laps: SwimLap[], distancia: number, distanciaParcial: number, tiempoFinal?: number): IntermediateTime[] {
+function calcularIntermedios(laps: SwimLap[], distancia: number, distanciaParcial: number, tiempoTotal: number): IntermediateTime[] {
   const intermedios: IntermediateTime[] = [];
   
   const intermediosPosibles = [50, 100, 150, 200, 300, 400, 500, 600, 800, 1000, 1500, 2000];
   const intermediosAMostrar = intermediosPosibles.filter(d => d < distancia);
   
-  if (laps.length === 0 && tiempoFinal) {
+  if (laps.length === 0 && tiempoTotal > 0) {
     for (const dist of intermediosAMostrar) {
       const proporcion = dist / distancia;
-      const tiempoEstimado = tiempoFinal * proporcion;
+      const tiempoEstimado = tiempoTotal * proporcion;
       intermedios.push({ distancia: dist, tiempo: Math.round(tiempoEstimado), esReal: false });
     }
     return intermedios;
