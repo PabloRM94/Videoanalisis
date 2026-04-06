@@ -79,7 +79,7 @@ export default function CronometroPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'configurar' | 'ejecutar' | 'resultados'>('configurar');
   
-  const [calles, setCalles] = useState(3);
+  const [calles, setCalles] = useState<number | ''>(1);
   const [intervalo, setIntervalo] = useState(5);
   const [customIntervalo, setCustomIntervalo] = useState('');
   const [showCustomIntervalo, setShowCustomIntervalo] = useState(false);
@@ -441,8 +441,19 @@ export default function CronometroPage() {
                   min={1}
                   max={8}
                   value={calles}
-                  onChange={(e) => setCalles(parseInt(e.target.value) || 1)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '') {
+                      setCalles('');
+                    } else {
+                      const num = parseInt(val);
+                      if (!isNaN(num)) {
+                        setCalles(Math.min(8, Math.max(1, num)));
+                      }
+                    }
+                  }}
                   className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  placeholder="1"
                 />
               </div>
               <div>
@@ -502,36 +513,42 @@ export default function CronometroPage() {
                 </div>
 
                 {/* Filas de calles */}
-                {Array.from({ length: calles }, (_, i) => i + 1).map(calleNum => (
-                  <div key={calleNum} className="flex items-center py-2 border-b border-ocean-100">
-                    <div className="w-20 font-medium text-ocean-800">Calle {calleNum}</div>
-                    {Array.from({ length: Math.max(6, maxPosicion) }, (_, i) => i + 1).map(pos => {
-                      const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
-                      return (
-                        <div key={pos} className="flex-1 px-1">
-                          {nadador ? (
-                            <div className="bg-ocean-100 rounded-lg p-2 flex items-center justify-between">
-                              <span className="text-sm font-medium text-ocean-800 truncate">{nadador.nombre}</span>
-                              <button
-                                onClick={() => removeNadador(nadador.id)}
-                                className="text-ocean-400 hover:text-red-500"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => setShowNadadorSelector({ calle: calleNum, posicion: pos })}
-                              className="w-full p-2 border-2 border-dashed border-ocean-200 rounded-lg text-ocean-400 hover:border-ocean-400 hover:text-ocean-600 text-sm"
-                            >
-                              + Añadir
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
+                {calles === '' ? (
+                  <div className="text-center py-4 text-ocean-400">
+                    Ingresa el número de calles
                   </div>
-                ))}
+                ) : (
+                  Array.from({ length: calles }, (_, i) => i + 1).map(calleNum => (
+                    <div key={calleNum} className="flex items-center py-2 border-b border-ocean-100">
+                      <div className="w-20 font-medium text-ocean-800">Calle {calleNum}</div>
+                      {Array.from({ length: Math.max(6, maxPosicion) }, (_, idx) => idx + 1).map(pos => {
+                        const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
+                        return (
+                          <div key={pos} className="flex-1 px-1">
+                            {nadador ? (
+                              <div className="bg-ocean-100 rounded-lg p-2 flex items-center justify-between">
+                                <span className="text-sm font-medium text-ocean-800 truncate">{nadador.nombre}</span>
+                                <button
+                                  onClick={() => removeNadador(nadador.id)}
+                                  className="text-ocean-400 hover:text-red-500"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setShowNadadorSelector({ calle: calleNum, posicion: pos })}
+                                className="w-full p-2 border-2 border-dashed border-ocean-200 rounded-lg text-ocean-400 hover:border-ocean-400 hover:text-ocean-600 text-sm"
+                              >
+                                + Añadir
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 
