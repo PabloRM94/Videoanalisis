@@ -8,13 +8,15 @@ import {
   query, 
   where, 
   getDocs, 
+  getDoc,
   doc, 
   updateDoc,
+  setDoc,
   addDoc,
   deleteDoc,
   serverTimestamp 
 } from 'firebase/firestore';
-import { Users, UserPlus, Plus, Search, Edit, Trash2, X, Eye, Send, Loader2 } from 'lucide-react';
+import { Users, UserPlus, Plus, Search, Edit, Trash2, X, Eye, Send, Loader2, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
 
 interface Cliente {
   id: string;
@@ -23,6 +25,11 @@ interface Cliente {
   telefono: string;
   objetivo: string;
   grupoId: string | null;
+  precioMensual?: number;
+}
+
+interface Cobro {
+  [mes: string]: boolean;
 }
 
 interface Grupo {
@@ -90,6 +97,17 @@ export default function EntrenadorClientesPage() {
   const [verHistorial, setVerHistorial] = useState<Cliente | null>(null);
   const [historialCargando, setHistorialCargando] = useState(false);
   const [historialData, setHistorialData] = useState<any[]>([]);
+  
+  // Estados para cobros
+  const [currentMonth, setCurrentMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [cobros, setCobros] = useState<Record<string, Record<string, boolean>>>({});
+  const [precios, setPrecios] = useState<Record<string, number>>({});
+  const [loadingCobros, setLoadingCobros] = useState(false);
+  const [editingPrecio, setEditingPrecio] = useState<string | null>(null);
+  const [precioInput, setPrecioInput] = useState('');
   
   // Ref para el dropdown
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -172,6 +190,64 @@ export default function EntrenadorClientesPage() {
 
     fetchData();
   }, [user]);
+
+  // Fetch cobros cuando cambian clientes o mes
+  useEffect(() => {
+    const fetchCobros = async () => {
+      if (clientes.length === 0) return;
+      
+      setLoadingCobros(true);
+      try {
+        const cobrosRef = collection(db, 'cobros');
+        const cobrosSnap = await getDocs(cobrosRef);
+        
+        const cobrosData: Record<string, Record<string, boolean>> = {};
+        const preciosData: Record<string, number> = {};
+        
+        // Init con estructura vacía para cada cliente
+        clientes.forEach(c => {
+          cobrosData[c.id] = {};
+          preciosData[c.id] = c.precioMensual || 0;
+        });
+        
+        for (const doc of cobrosSnap.docs) {
+          const data = doc.data();
+          const clienteId = data.clienteId;
+          if (cobrosData[clienteId]) {
+            if (data.pagos) {
+              cobrosData[clienteId] = { ...cobrosData[clienteId], ...data.pagos };
+            }
+            if (data.precios) {
+              Object.entries(data.precios).forEach(([mes, precio]) => {
+                preciosData[clienteId] = precio as number;
+              });
+            }
+          }
+        }
+        
+        setCobros(cobrosData);
+        setPrecios(preciosData);
+      } catch (error) {
+        console.error('Error fetching cobros:', error);
+      } finally {
+        setLoadingCobros(false);
+      }
+    };
+
+    fetchCobros();
+  }, [clientes.length, currentMonth]);
+
+  // Navegación de meses
+  const changeMonth = (delta: number) => {
+    const [year, month] = currentMonth.split('-').map(Number);
+    const date = new Date(year, month - 1 + delta, 1);
+    setCurrentMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+  };
+
+  const getMonthName = (mes: string) => {
+    const [year, month] = mes.split('-').map(Number);
+    return new Date(year, month - 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+  };
 
   const createGrupo = async () => {
     if (!user || !newGrupoNombre.trim()) return;
@@ -479,6 +555,74 @@ export default function EntrenadorClientesPage() {
     }
   };
 
+  // Toggle pagado
+  const togglePagado = async (clienteId: string) => {
+    const nuevoEstado = !cobros[clienteId]?.[currentMonth];
+    
+    try {
+      const cobroRef = doc(db, 'cobros', clienteId);
+      const cobroDoc = await getDoc(cobroRef);
+      
+      if (cobroDoc.exists()) {
+        await updateDoc(cobroRef, {
+          [`pagos.${currentMonth}`]: nuevoEstado,
+        });
+      } else {
+        await setDoc(cobroRef, {
+          clienteId,
+          pagos: { [currentMonth]: nuevoEstado },
+          precios: {},
+        });
+      }
+      
+      setCobros(prev => ({
+        ...prev,
+        [clienteId]: {
+          ...prev[clienteId],
+          [currentMonth]: nuevoEstado,
+        },
+      }));
+    } catch (error) {
+      console.error('Error toggling pago:', error);
+    }
+  };
+
+  // Guardar precio
+  const savePrecio = async (clienteId: string) => {
+    const precio = parseFloat(precioInput);
+    if (isNaN(precio) || precio < 0) return;
+    
+    try {
+      const cobroRef = doc(db, 'cobros', clienteId);
+      const cobroDoc = await getDoc(cobroRef);
+      
+      if (cobroDoc.exists()) {
+        await updateDoc(cobroRef, {
+          [`precios.${currentMonth}`]: precio,
+        });
+      } else {
+        await setDoc(cobroRef, {
+          clienteId,
+          pagos: {},
+          precios: { [currentMonth]: precio },
+        });
+      }
+      
+      setPrecios(prev => ({
+        ...prev,
+        [clienteId]: precio,
+      }));
+      setEditingPrecio(null);
+    } catch (error) {
+      console.error('Error saving precio:', error);
+    }
+  };
+
+  const startEditPrecio = (clienteId: string, precioActual: number) => {
+    setEditingPrecio(clienteId);
+    setPrecioInput(precioActual.toString());
+  };
+
   // Mostrar clientes según grupo seleccionado (incluye "Sin grupo")
   const clientesFiltrados = selectedGrupo === 'sin_grupo'
     ? clientes.filter(c => !c.grupoId)
@@ -520,6 +664,30 @@ export default function EntrenadorClientesPage() {
           >
             <UserPlus className="w-4 h-4" />
             Nuevo Cliente
+          </button>
+        </div>
+      </div>
+
+      {/* Selector de Mes */}
+      <div className="bg-white rounded-xl shadow-sm p-4">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => changeMonth(-1)}
+            className="p-2 text-ocean-600 hover:bg-ocean-100 rounded-lg"
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <div className="flex items-center gap-2">
+            <DollarSign className="w-5 h-5 text-ocean-600" />
+            <span className="text-lg font-semibold text-ocean-800 capitalize">
+              {getMonthName(currentMonth)}
+            </span>
+          </div>
+          <button
+            onClick={() => changeMonth(1)}
+            className="p-2 text-ocean-600 hover:bg-ocean-100 rounded-lg"
+          >
+            <ChevronRight className="w-5 h-5" />
           </button>
         </div>
       </div>
@@ -626,6 +794,8 @@ export default function EntrenadorClientesPage() {
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Teléfono</th>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Objetivo</th>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Grupo</th>
+                  <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Precio</th>
+                  <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Pagado</th>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Acciones</th>
                 </tr>
               </thead>
@@ -658,6 +828,48 @@ export default function EntrenadorClientesPage() {
                           <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
                         ))}
                       </select>
+                    </td>
+                    <td className="px-6 py-4">
+                      {editingPrecio === cliente.id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={precioInput}
+                            onChange={(e) => setPrecioInput(e.target.value)}
+                            className="w-20 px-2 py-1 text-sm border border-ocean-200 rounded focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => savePrecio(cliente.id)}
+                            className="p-1 text-green-600 hover:bg-green-100 rounded"
+                          >
+                            ✓
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => startEditPrecio(cliente.id, precios[cliente.id] || 0)}
+                          className="text-sm text-ocean-600 hover:text-ocean-800 flex items-center gap-1"
+                        >
+                          {precios[cliente.id] || 0}€
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => togglePagado(cliente.id)}
+                        className={`w-12 h-6 rounded-full transition-colors ${
+                          cobros[cliente.id]?.[currentMonth]
+                            ? 'bg-green-500'
+                            : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`block w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                          cobros[cliente.id]?.[currentMonth]
+                            ? 'translate-x-6'
+                            : 'translate-x-0.5'
+                        }`} />
+                      </button>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-1">
