@@ -121,6 +121,9 @@ export default function EntrenadorWorkoutsPage() {
   // Workout expandido (para mostrar/ocultar ejercicios)
   const [expandedWorkouts, setExpandedWorkouts] = useState<Record<string, boolean>>({});
   
+  // Meses expandidos (para acordeón de meses)
+  const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
+  
   // Form state
   const [formData, setFormData] = useState({
     titulo: '',
@@ -203,10 +206,9 @@ export default function EntrenadorWorkoutsPage() {
 
       setLoading(true);
       try {
-        // Fetch tareas (con límite para mejor rendimiento)
+        // Fetch tareas (sin límite para traer todas)
         const tareasRef = collection(db, 'tareas');
-        const tareasQ = query(tareasRef, limit(100));
-        const tareasSnap = await getDocs(tareasQ);
+        const tareasSnap = await getDocs(tareasRef);
         const tareasData = tareasSnap.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
@@ -235,9 +237,9 @@ export default function EntrenadorWorkoutsPage() {
         }));
         setClientes(clientesData);
 
-        // Fetch workouts con límite y ordenados por fecha (más recientes primero)
+        // Fetch workouts ordenados por fecha (más recientes primero)
         const workoutsRef = collection(db, 'workouts');
-        const workoutsQ = query(workoutsRef, orderBy('fecha', 'desc'), limit(50));
+        const workoutsQ = query(workoutsRef, orderBy('fecha', 'desc'));
         const workoutsSnap = await getDocs(workoutsQ);
         const workoutsData = workoutsSnap.docs.map(doc => ({
           id: doc.id,
@@ -787,6 +789,46 @@ export default function EntrenadorWorkoutsPage() {
     return matchSearch && matchObjetivo && matchMaterial && matchMetros;
   });
 
+  // Función para obtener clave mes-año y formatear
+  const getMonthKey = (fecha: string) => {
+    const d = new Date(fecha);
+    return `${d.getMonth()}-${d.getFullYear()}`;
+  };
+
+  const formatMonthYear = (fecha: string) => {
+    const d = new Date(fecha);
+    return d.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase());
+  };
+
+  // Agrupar workouts por mes-año
+  const workoutsPorMes = filteredWorkouts.reduce((acc, workout) => {
+    const key = getMonthKey(workout.fecha);
+    if (!acc[key]) {
+      acc[key] = [];
+    }
+    acc[key].push(workout);
+    return acc;
+  }, {} as Record<string, Workout[]>);
+
+  // Ordenar meses: mes actual primero, luego el resto
+  const currentMonth = new Date().getMonth();
+  const currentYear = new Date().getFullYear();
+  const currentMonthKey = `${currentMonth}-${currentYear}`;
+
+  const mesesOrdenados = Object.keys(workoutsPorMes).sort((a, b) => {
+    if (a === currentMonthKey) return -1;
+    if (b === currentMonthKey) return 1;
+    const [monthA, yearA] = a.split('-').map(Number);
+    const [monthB, yearB] = b.split('-').map(Number);
+    if (yearA !== yearB) return yearB - yearA;
+    return monthB - monthA;
+  });
+
+  // Toggle mes
+  const toggleMonth = (monthKey: string) => {
+    setExpandedMonths(prev => ({ ...prev, [monthKey]: !prev[monthKey] }));
+  };
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -939,67 +981,99 @@ export default function EntrenadorWorkoutsPage() {
         </div>
       ) : (
         <div className="space-y-4">
-          {filteredWorkouts.map((workout) => {
-            const workoutTareas = getTareasDetails(workout.tareaIds);
+          {mesesOrdenados.map((monthKey) => {
+            const workoutsDelMes = workoutsPorMes[monthKey];
+            const isExpanded = expandedMonths[monthKey] ?? (monthKey === currentMonthKey);
+            const primerWorkout = workoutsDelMes[0];
             
             return (
-              <div key={workout.id} className="bg-white rounded-xl shadow-sm p-6">
-                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4">
-                  <div>
-                    <h3 className="text-lg font-semibold text-ocean-800">{workout.titulo}</h3>
-                    <div className="flex flex-wrap items-center gap-3 text-sm text-ocean-600 mt-1">
-                      <span>🎯 {workout.objetivo}</span>
-                      <span>🏊 {workout.metros}m</span>
-                      <span>📦 {workout.material}</span>
-                      {workoutTareas.length > 0 && (
-                        <button
-                          onClick={() => setExpandedWorkouts(prev => ({ ...prev, [workout.id]: !prev[workout.id] }))}
-                          className="flex items-center gap-1 text-ocean-700 hover:text-ocean-900 font-medium"
-                        >
-                          <ChevronIcon className={`w-4 h-4 transition-transform ${expandedWorkouts[workout.id] ? 'rotate-180' : ''}`} />
-                          📋 {workoutTareas.length} ejercicios {expandedWorkouts[workout.id] ? '(ocultar)' : '(mostrar)'}
-                        </button>
-                      )}
-                    </div>
+              <div key={monthKey} className="bg-white rounded-xl shadow-sm overflow-hidden">
+                {/* Acordeón: Header del mes */}
+                <button
+                  onClick={() => toggleMonth(monthKey)}
+                  className="w-full flex items-center justify-between p-4 bg-ocean-50 hover:bg-ocean-100 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <Calendar className="w-5 h-5 text-ocean-600" />
+                    <span className="font-semibold text-ocean-800">
+                      {formatMonthYear(primerWorkout.fecha)}
+                    </span>
+                    <span className="text-sm text-ocean-500">
+                      ({workoutsDelMes.length} workout{workoutsDelMes.length !== 1 ? 's' : ''})
+                    </span>
                   </div>
-                  <div className="flex gap-2">
-                    <Link
-                      href={`/entrenador/workouts/${workout.id}/editar`}
-                      className="flex items-center gap-2 px-3 py-2 bg-ocean-100 text-ocean-700 rounded-lg hover:bg-ocean-200 text-sm"
-                    >
-                      <Edit className="w-4 h-4" />
-                      Editar
-                    </Link>
-                    <button
-                      onClick={() => openAssign(workout)}
-                      className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm"
-                    >
-                      <Send className="w-4 h-4" />
-                      Asignar
-                    </button>
-                    <button
-                      onClick={() => deleteWorkout(workout.id)}
-                      className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
+                  <ChevronIcon className={`w-5 h-5 text-ocean-600 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                </button>
 
-                {/* Tareas */}
-                {workoutTareas.length > 0 && expandedWorkouts[workout.id] && (
-                  <div className="border-t border-ocean-100 pt-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {workoutTareas.map((tarea, idx) => (
-                        <div key={idx} className="flex items-center gap-2 text-sm bg-ocean-50 rounded-lg px-3 py-2">
-                          <span className="w-6 h-6 flex items-center justify-center bg-ocean-200 text-ocean-700 rounded-full text-xs font-bold">
-                            {idx + 1}
-                          </span>
-                          <span className="text-ocean-800 whitespace-pre-wrap">{tarea.nombre}</span>
-                          <span className="text-ocean-500 ml-auto">{tarea.metros}m</span>
+                {/* Meses expandidos */}
+                {isExpanded && (
+                  <div className="divide-y divide-ocean-100">
+                    {workoutsDelMes.map((workout) => {
+                      const workoutTareas = getTareasDetails(workout.tareaIds);
+                      
+                      return (
+                        <div key={workout.id} className="p-6">
+                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4">
+                            <div>
+                              <h3 className="text-lg font-semibold text-ocean-800">{workout.titulo}</h3>
+                              <div className="flex flex-wrap items-center gap-3 text-sm text-ocean-600 mt-1">
+                                <span>🎯 {workout.objetivo}</span>
+                                <span>🏊 {workout.metros}m</span>
+                                <span>📦 {workout.material}</span>
+                                {workoutTareas.length > 0 && (
+                                  <button
+                                    onClick={() => setExpandedWorkouts(prev => ({ ...prev, [workout.id]: !prev[workout.id] }))}
+                                    className="flex items-center gap-1 text-ocean-700 hover:text-ocean-900 font-medium"
+                                  >
+                                    <ChevronIcon className={`w-4 h-4 transition-transform ${expandedWorkouts[workout.id] ? 'rotate-180' : ''}`} />
+                                    📋 {workoutTareas.length} ejercicios {expandedWorkouts[workout.id] ? '(ocultar)' : '(mostrar)'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <Link
+                                href={`/entrenador/workouts/${workout.id}/editar`}
+                                className="flex items-center gap-2 px-3 py-2 bg-ocean-100 text-ocean-700 rounded-lg hover:bg-ocean-200 text-sm"
+                              >
+                                <Edit className="w-4 h-4" />
+                                Editar
+                              </Link>
+                              <button
+                                onClick={() => openAssign(workout)}
+                                className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm"
+                              >
+                                <Send className="w-4 h-4" />
+                                Asignar
+                              </button>
+                              <button
+                                onClick={() => deleteWorkout(workout.id)}
+                                className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Tareas en lista vertical */}
+                          {workoutTareas.length > 0 && expandedWorkouts[workout.id] && (
+                            <div className="border-t border-ocean-100 pt-4">
+                              <div className="space-y-2">
+                                {workoutTareas.map((tarea, idx) => (
+                                  <div key={idx} className="flex items-center gap-3 text-sm bg-ocean-50 rounded-lg px-4 py-3">
+                                    <span className="w-7 h-7 flex items-center justify-center bg-ocean-200 text-ocean-700 rounded-full text-xs font-bold flex-shrink-0">
+                                      {idx + 1}
+                                    </span>
+                                    <span className="font-medium text-ocean-800 whitespace-pre-wrap flex-1">{tarea.nombre}</span>
+                                    <span className="text-ocean-500 flex-shrink-0">{tarea.metros}m</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

@@ -86,6 +86,8 @@ export default function EditarWorkoutPage() {
     metros: '',
     descripcion: '',
   });
+  // Estado para modo de guardado de tarea: 'create' = nueva tarea, 'update' = editar existente
+  const [tareaSaveMode, setTareaSaveMode] = useState<'create' | 'update' | null>(null);
 
   // Estado para asignación
   const [assignData, setAssignData] = useState({
@@ -283,10 +285,12 @@ export default function EditarWorkoutPage() {
     setShowTareaModal(true);
   };
 
-  // Issue #3: Guardar tarea (crear nueva o editar existente)
-  const handleSaveTarea = async () => {
+  // Guardar tarea: crear nueva o actualizar existente en el banco
+  const handleSaveTarea = async (saveMode?: 'create' | 'update') => {
+    const mode = saveMode || tareaSaveMode;
+    
+    // Caso 1: Crear nueva tarea desde el banco de tareas
     if (isCreatingNewTarea) {
-      // Crear nueva tarea en el banco y añadirla al workout
       try {
         const newTareaRef = await addDoc(collection(db, 'tareas'), {
           nombre: tareaFormData.nombre,
@@ -310,17 +314,72 @@ export default function EditarWorkoutPage() {
         alert('Error al crear la tarea');
         return;
       }
-    } else {
-      // Editar tarea existente solo en local (afecta este workout)
-      if (!editingTareaInWorkout) return;
-      setTareas(prev => prev.map(t =>
-        t.id === editingTareaInWorkout.id
-          ? { ...t, nombre: tareaFormData.nombre, objetivo: tareaFormData.objetivo, material: tareaFormData.material, metros: parseInt(tareaFormData.metros) || 0, descripcion: tareaFormData.descripcion }
-          : t
-      ));
+    }
+    // Caso 2: Editar tarea existente - dos opciones
+    else if (editingTareaInWorkout) {
+      if (mode === 'create') {
+        // Crear COPIA NUEVA en el banco (la original queda intacta)
+        try {
+          const newTareaRef = await addDoc(collection(db, 'tareas'), {
+            nombre: tareaFormData.nombre,
+            objetivo: tareaFormData.objetivo,
+            material: tareaFormData.material,
+            metros: parseInt(tareaFormData.metros) || 0,
+            descripcion: tareaFormData.descripcion,
+          });
+          const newTarea: Tarea = {
+            id: newTareaRef.id,
+            nombre: tareaFormData.nombre,
+            objetivo: tareaFormData.objetivo,
+            material: tareaFormData.material,
+            metros: parseInt(tareaFormData.metros) || 0,
+            descripcion: tareaFormData.descripcion,
+          };
+          setTareas(prev => [...prev, newTarea]);
+          // Añadir la nueva tarea al workout (reemplazar la original)
+          setFormData(prev => ({
+            ...prev,
+            tareaIds: prev.tareaIds.map(id => id === editingTareaInWorkout.id ? newTareaRef.id : id)
+          }));
+        } catch (err) {
+          console.error('Error creando copia de tarea:', err);
+          alert('Error al crear la copia de la tarea');
+          return;
+        }
+      } else if (mode === 'update') {
+        // Actualizar la tarea ORIGINAL en el banco
+        try {
+          await updateDoc(doc(db, 'tareas', editingTareaInWorkout.id), {
+            nombre: tareaFormData.nombre,
+            objetivo: tareaFormData.objetivo,
+            material: tareaFormData.material,
+            metros: parseInt(tareaFormData.metros) || 0,
+            descripcion: tareaFormData.descripcion,
+          });
+          // Actualizar en memoria local
+          setTareas(prev => prev.map(t =>
+            t.id === editingTareaInWorkout.id
+              ? { ...t, nombre: tareaFormData.nombre, objetivo: tareaFormData.objetivo, material: tareaFormData.material, metros: parseInt(tareaFormData.metros) || 0, descripcion: tareaFormData.descripcion }
+              : t
+          ));
+        } catch (err) {
+          console.error('Error actualizando tarea:', err);
+          alert('Error al guardar los cambios de la tarea');
+          return;
+        }
+      }
     }
     setShowTareaModal(false);
     setEditingTareaInWorkout(null);
+    setTareaSaveMode(null);
+  };
+
+  // Cerrar modal de tarea y limpiar estados
+  const closeTareaModal = () => {
+    setShowTareaModal(false);
+    setEditingTareaInWorkout(null);
+    setTareaSaveMode(null);
+    setTareaFormData({ nombre: '', objetivo: [], material: '', metros: '', descripcion: '' });
   };
 
   // Previsualizar PDF
@@ -1101,21 +1160,54 @@ export default function EditarWorkoutPage() {
               />
             </div>
 
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowTareaModal(false)}
-                className="flex-1 py-2 border border-ocean-200 text-ocean-600 rounded-lg hover:bg-ocean-50"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleSaveTarea}
-                disabled={!tareaFormData.nombre.trim()}
-                className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50"
-              >
-                {isCreatingNewTarea ? 'Crear y añadir' : 'Guardar cambios'}
-              </button>
-            </div>
+            {/* Botones de acción según el contexto */}
+            {editingTareaInWorkout ? (
+              // Modo edición: dos opciones
+              <div className="space-y-2">
+                <p className="text-xs text-ocean-500 bg-amber-50 rounded-lg px-3 py-2">
+                  Estás editando una tarea del banco. ¿Qué quieres hacer?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleSaveTarea('create')}
+                    disabled={!tareaFormData.nombre.trim()}
+                    className="flex-1 py-2 border border-ocean-300 text-ocean-700 bg-white rounded-lg hover:bg-ocean-50 disabled:opacity-50 font-medium"
+                  >
+                    📄 Crear copia nueva
+                  </button>
+                  <button
+                    onClick={() => handleSaveTarea('update')}
+                    disabled={!tareaFormData.nombre.trim()}
+                    className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50 font-medium"
+                  >
+                    💾 Guardar cambios
+                  </button>
+                </div>
+                <button
+                  onClick={closeTareaModal}
+                  className="w-full py-2 text-ocean-500 hover:text-ocean-700 text-sm"
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              // Modo creación: un solo botón
+              <div className="flex gap-2">
+                <button
+                  onClick={closeTareaModal}
+                  className="flex-1 py-2 border border-ocean-200 text-ocean-600 rounded-lg hover:bg-ocean-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => handleSaveTarea('create')}
+                  disabled={!tareaFormData.nombre.trim()}
+                  className="flex-1 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700 disabled:opacity-50"
+                >
+                  {isCreatingNewTarea ? 'Crear y añadir' : 'Guardar cambios'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

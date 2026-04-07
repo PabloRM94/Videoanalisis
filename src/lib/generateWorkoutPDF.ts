@@ -18,7 +18,7 @@ export interface WorkoutParaPDF {
 const OCEAN_BLUE: [number, number, number]  = [2,   132, 199];  // #0284c7
 const OCEAN_DARK: [number, number, number]  = [12,  74,  110];  // #0c4a6e
 const ACCENT_BAR: [number, number, number]  = [2,   132, 199];  // barra azul
-const BG_PAGE:    [number, number, number]  = [248, 250, 252];  // slate-50 — fondo sutil
+const BG_PAGE:    [number, number, number]  = [241, 245, 249];  // slate-100 — fondo más gris para contrastar con cabecera blanca
 const WHITE:      [number, number, number]  = [255, 255, 255];
 const ROW_ALT:    [number, number, number]  = [237, 245, 252];  // azul muy pálido
 const GRAY:       [number, number, number]  = [100, 100, 100];
@@ -28,9 +28,9 @@ const GRAY_LIGHT: [number, number, number]  = [160, 160, 160];
 const MARGIN_X   = 15;
 const HEADER_H   = 28;   // altura del header blanco con logo + texto contacto
 const ACCENT_H   =  2;   // franja azul separadora
-const FONT_BODY  =  8.5;
-const FONT_HDR   =  8.5;
-const ROW_MIN_H  =  8;
+const FONT_BODY  = 10;
+const FONT_HDR   = 10;
+const ROW_MIN_H  = 10;
 
 // Anchos de columna en mm — total = 180 (210 - 15*2)
 const COL = {
@@ -88,7 +88,7 @@ export async function generateWorkoutPDF(
   const pageW = pdf.internal.pageSize.getWidth();   // 210
   const pageH = pdf.internal.pageSize.getHeight();  // 297
 
-  // ── FONDO DE PÁGINA ──────────────────────────────────────────────────────────
+  // ── FONDO DE PÁGINA (slate-50) ────────────────────────────────────────────────
   fillPageBackground(pdf, pageW, pageH);
 
   // ── HEADER — fondo BLANCO para que el logo negro resalte ────────────────────
@@ -110,13 +110,9 @@ export async function generateWorkoutPDF(
     const naturalH = imgEl.naturalHeight || 950;
     const aspect   = naturalW / naturalH;
 
-    // La imagen ocupa ~40 % del ancho del header, centrada verticalmente
-    const maxImgH = HEADER_H - 6;   // padding 3mm arriba/abajo
-    const maxImgW = pageW * 0.42;
-    let imgH = maxImgH;
-    let imgW = imgH * aspect;
-    if (imgW > maxImgW) { imgW = maxImgW; imgH = imgW / aspect; }
-
+    // Logo - forzar ancho fijo grande, pegado a la izquierda
+    const imgW = 100;
+    const imgH = imgW / aspect;
     const imgX = MARGIN_X;
     const imgY = (HEADER_H - imgH) / 2;
     pdf.addImage(heroB64, 'JPEG', imgX, imgY, imgW, imgH);
@@ -130,50 +126,60 @@ export async function generateWorkoutPDF(
 
   // Texto de contacto (derecha, alineado al margen derecho) ──────────────────
   const contactLines = [
-    'Entrenamiento diseñado por Pablo Rodríguez Madurga',
+    'Entrenamiento diseñado por',
+    'Pablo Rodríguez Madurga',
     '@videoanalisis_natacion',
     'Tlf: 638 285 938',
   ];
   const contactX = pageW - MARGIN_X;
-  const contactStartY = (HEADER_H - contactLines.length * 4) / 2 + 3.5;
+  const contactStartY = (HEADER_H - contactLines.length * 4) / 2 + 2;
 
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(7.8);
+  pdf.setFontSize(9);
   pdf.setTextColor(...OCEAN_DARK);
   pdf.text(contactLines[0], contactX, contactStartY, { align: 'right' });
 
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(7.5);
-  pdf.setTextColor(...OCEAN_BLUE);
-  pdf.text(contactLines[1], contactX, contactStartY + 4, { align: 'right' });
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(9);
+  pdf.setTextColor(...OCEAN_DARK);
+  pdf.text(contactLines[1], contactX, contactStartY + 4.5, { align: 'right' });
 
   pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(7.2);
+  pdf.setFontSize(8.5);
+  pdf.setTextColor(...OCEAN_BLUE);
+  pdf.text(contactLines[2], contactX, contactStartY + 9, { align: 'right' });
+
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(8);
   pdf.setTextColor(...GRAY);
-  pdf.text(contactLines[2], contactX, contactStartY + 8, { align: 'right' });
+  pdf.text(contactLines[3], contactX, contactStartY + 13.5, { align: 'right' });
 
   // Franja azul separadora ───────────────────────────────────────────────────
   pdf.setFillColor(...ACCENT_BAR);
   pdf.rect(0, HEADER_H, pageW, ACCENT_H, 'F');
 
+  // Fondo del resto de la página (slate-100)
+  pdf.setFillColor(...BG_PAGE);
+  pdf.rect(0, HEADER_H + ACCENT_H, pageW, pageH - HEADER_H - ACCENT_H, 'F');
+
   // ── TÍTULO DEL WORKOUT ───────────────────────────────────────────────────────
   let y = HEADER_H + ACCENT_H + 9;
 
-  pdf.setFontSize(16);
+  pdf.setFontSize(18);
   pdf.setTextColor(...OCEAN_DARK);
   pdf.setFont('helvetica', 'bold');
   pdf.text(workout.titulo, MARGIN_X, y);
 
-  y += 6;
+  y += 7;
 
   // Línea de resumen
-  pdf.setFontSize(8.5);
+  pdf.setFontSize(10);
   pdf.setFont('helvetica', 'normal');
   pdf.setTextColor(...GRAY);
   const summary = `Objetivo: ${objetivo}   ·   ${metros}m totales   ·   ${material}`;
   pdf.text(summary, MARGIN_X, y);
 
-  y += 4;
+  y += 5;
 
   // Línea separadora delgada azul
   pdf.setDrawColor(...OCEAN_BLUE);
@@ -337,10 +343,10 @@ export async function generateWorkoutPDF(
     pdf.setFillColor(...OCEAN_DARK);
     pdf.rect(0, pageH - 7, pageW, 7, 'F');
 
-    pdf.setFontSize(7);
+    pdf.setFontSize(8);
     pdf.setFont('helvetica', 'normal');
     pdf.setTextColor(...WHITE);
-    pdf.text('VideoAnalisis — Natación', MARGIN_X, pageH - 3);
+    pdf.text('VideoAnalisis — Natación', MARGIN_X, pageH - 2.5);
     pdf.text(
       new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' }),
       pageW - MARGIN_X,
@@ -354,6 +360,26 @@ export async function generateWorkoutPDF(
   for (let i = 1; i <= totalPages; i++) {
     pdf.setPage(i);
     applyFooter(i);
+  }
+
+  // Ajustar el tamaño del PDF al contenido (eliminar espacio en blanco al final)
+  // Encontrar la última página con contenido real
+  let contenidoMaxY = 0;
+  for (let i = 1; i <= totalPages; i++) {
+    pdf.setPage(i);
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    contenidoMaxY = Math.max(contenidoMaxY, pageHeight - 20); // margen inferior para el footer
+  }
+
+  // Si la última página tiene mucho espacio en blanco, ajustar el tamaño
+  if (totalPages > 1) {
+    const lastPage = totalPages;
+    pdf.setPage(lastPage);
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    // Dejar solo una página si el contenido cabe en menos páginas
+    if (contenidoMaxY < pageHeight * 0.5) {
+      pdf.deletePage(lastPage);
+    }
   }
 
   // ── BLOB URL ─────────────────────────────────────────────────────────────────
