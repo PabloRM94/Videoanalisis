@@ -3,12 +3,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { db } from '@/config/firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { Search, X, Plus, Play, RotateCcw, Square, Flag, Check, AlertCircle, ChevronDown, ChevronUp, Volume2, VolumeX, Settings } from 'lucide-react';
 
 interface Cliente {
   id: string;
   nombre: string;
+  grupoId?: string | null;
 }
 
 interface NadadorConfig {
@@ -17,6 +18,12 @@ interface NadadorConfig {
   nombre: string;
   calle: number;
   posicion: number;
+}
+
+interface Grupo {
+  id: string;
+  nombre: string;
+  clienteIds?: string[];
 }
 
 interface SwimLap {
@@ -77,13 +84,32 @@ function vibrate(pattern: number | number[]) {
   }
 }
 
+function parseTimeToMs(timeStr: string): number {
+  const parts = timeStr.split(':');
+  if (parts.length === 2) {
+    const minutes = parseInt(parts[0]) || 0;
+    const seconds = parseInt(parts[1]) || 0;
+    return minutes * 60 * 1000 + seconds * 1000;
+  }
+  return 0;
+}
+
+function formatTimeShort(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
 interface IntermediateTime {
   distancia: number;
   tiempo: number;
   esReal: boolean;
 }
 
-function calcularIntermedios(laps: SwimLap[], distancia: number, distanciaParcial: number, tiempoTotal: number): IntermediateTime[] {
+function calcularIntermedios(laps: SwimLap[], distancia: number, distanciaParcial: number, tiempoTotal: number, parciales: number): IntermediateTime[] {
+  if (parciales === 0) return [];
+  
   const intermedios: IntermediateTime[] = [];
   
   const intermediosPosibles = [50, 100, 150, 200, 300, 400, 500, 600, 800, 1000, 1500, 2000];
@@ -123,8 +149,11 @@ function calcularIntermedios(laps: SwimLap[], distancia: number, distanciaParcia
 export default function CronometroPage() {
   const { user } = useAuth();
   const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [grupos, setGrupos] = useState<Grupo[]>([]);
+  const [selectedGrupo, setSelectedGrupo] = useState<string>('todos');
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'configurar' | 'ejecutar' | 'resultados'>('configurar');
+  const [cronometroModo, setCronometroModo] = useState<'mmp' | 'series'>('mmp');
   
   const [calles, setCalles] = useState<number | ''>(1);
   const [intervalo, setIntervalo] = useState(5);
@@ -134,13 +163,29 @@ export default function CronometroPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showNadadorSelector, setShowNadadorSelector] = useState<{calle: number; posicion: number} | null>(null);
   
+  // Drag and drop state
+  const [draggedNadador, setDraggedNadador] = useState<NadadorConfig | null>(null);
+  const [dragOverTarget, setDragOverTarget] = useState<{calle: number; posicion: number} | 'addCalle' | null>(null);
+  
   // Configuración de distancia
   const [distancia, setDistancia] = useState<number>(100);
-  const [parciales, setParciales] = useState<number>(4);
+  const [parciales, setParciales] = useState<number | ''>(0);
+  
+  // Configuración de series
+  const [serieRepeticiones, setSerieRepeticiones] = useState<number | ''>(4);
+  const [serieDistanciaBase, setSerieDistanciaBase] = useState<number | ''>(50);
+  const [serieTiempo, setSerieTiempo] = useState<string>('01:30');
+  const [serieDistanciasDiferentes, setSerieDistanciasDiferentes] = useState(false);
+  const [serieTiemposPersonalizados, setSerieTiemposPersonalizados] = useState<string[]>([]);
+  const [repeticionActual, setRepeticionActual] = useState(1);
+  const [tiemposRegistrados, setTiemposRegistrados] = useState<Map<string, (number | null)[]>>(new Map());
+  const [serieEnCurso, setSerieEnCurso] = useState(false);
   
   const [timers, setTimers] = useState<TimerState[]>([]);
   const [timersIniciados, setTimersIniciados] = useState(false);
   const [cronometroIniciado, setCronometroIniciado] = useState(false);
+  const [cronometroGlobalActivo, setCronometroGlobalActivo] = useState(false);
+  const [tiempoGlobalInicio, setTiempoGlobalInicio] = useState<number | null>(null);
   const [sonidoActivo, setSonidoActivo] = useState(true);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   
@@ -149,7 +194,7 @@ export default function CronometroPage() {
   const startTimeRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const fetchClientes = async () => {
+    const fetchData = async () => {
       if (!user) return;
       try {
         const clientesRef = collection(db, 'users');
@@ -158,15 +203,25 @@ export default function CronometroPage() {
         const clientesData: Cliente[] = clientesSnap.docs.map(doc => ({
           id: doc.id,
           nombre: doc.data().nombre || '',
+          grupoId: doc.data().grupoId || null,
         }));
         setClientes(clientesData.sort((a, b) => a.nombre.localeCompare(b.nombre)));
+
+        const gruposRef = collection(db, 'grupos');
+        const gruposSnap = await getDocs(gruposRef);
+        const gruposData: Grupo[] = gruposSnap.docs.map(doc => ({
+          id: doc.id,
+          nombre: doc.data().nombre || '',
+          clienteIds: doc.data().clienteIds || [],
+        }));
+        setGrupos(gruposData.sort((a, b) => a.nombre.localeCompare(b.nombre)));
       } catch (error) {
-        console.error('Error fetching clientes:', error);
+        console.error('Error fetching data:', error);
       } finally {
         setLoading(false);
       }
     };
-    fetchClientes();
+    fetchData();
   }, [user]);
 
   const getIntervalo = () => {
@@ -176,18 +231,26 @@ export default function CronometroPage() {
     return intervalo;
   };
 
+  const getParciales = () => {
+    if (parciales === '') return 0;
+    return parciales;
+  };
+
   const addNadador = (cliente: Cliente, calle: number, posicion: number) => {
-    const exists = nadadores.find(n => n.calle === calle && n.posicion === posicion);
     const clienteEnOtraPosicion = nadadores.find(n => n.clienteId === cliente.id);
     
-    if (exists || clienteEnOtraPosicion) return;
+    if (clienteEnOtraPosicion) return;
+    
+    const nadadoresEnCalle1 = nadadores.filter(n => n.calle === 1);
+    const maxPosicion = nadadoresEnCalle1.length > 0 ? Math.max(...nadadoresEnCalle1.map(n => n.posicion)) : 0;
+    const nuevaPosicion = maxPosicion + 1;
     
     setNadadores([...nadadores, {
-      id: `${calle}-${posicion}-${Date.now()}`,
+      id: `${calle}-${nuevaPosicion}-${Date.now()}`,
       clienteId: cliente.id,
       nombre: cliente.nombre,
-      calle,
-      posicion,
+      calle: 1,
+      posicion: nuevaPosicion,
     }]);
     setShowNadadorSelector(null);
     setSearchTerm('');
@@ -197,9 +260,137 @@ export default function CronometroPage() {
     setNadadores(nadadores.filter(n => n.id !== id));
   };
 
-  const getMaxPosicion = () => {
+  const handleDragStart = (e: React.DragEvent, nadador: NadadorConfig) => {
+    setDraggedNadador(nadador);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, calle: number, posicion: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverTarget({ calle, posicion });
+  };
+
+  const handleDragLeave = () => {
+    setDragOverTarget(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetCalle: number, targetPosicion: number) => {
+    e.preventDefault();
+    setDragOverTarget(null);
+    
+    if (!draggedNadador) return;
+    
+    const sourceCalle = draggedNadador.calle;
+    const sourcePosicion = draggedNadador.posicion;
+    
+    if (sourceCalle === targetCalle && sourcePosicion === targetPosicion) {
+      setDraggedNadador(null);
+      return;
+    }
+    
+    const nadadorEnDestino = nadadores.find(
+      n => n.calle === targetCalle && n.posicion === targetPosicion
+    );
+    
+    if (nadadorEnDestino) {
+      setNadadores(prev => prev.map(n => {
+        if (n.id === draggedNadador.id) {
+          return { ...n, calle: targetCalle, posicion: targetPosicion };
+        }
+        if (n.id === nadadorEnDestino.id) {
+          return { ...n, calle: sourceCalle, posicion: sourcePosicion };
+        }
+        return n;
+      }));
+    } else {
+      setNadadores(prev => prev.map(n => 
+        n.id === draggedNadador.id 
+          ? { ...n, calle: targetCalle, posicion: targetPosicion }
+          : n
+      ));
+    }
+    
+    setDraggedNadador(null);
+    setTimeout(() => reorderNadadores(), 0);
+  };
+
+  const removeLane = (calleNum: number) => {
+    const calleAnterior = calleNum - 1;
+    
+    if (calleAnterior < 1) {
+      setCalles(prev => prev === '' ? 1 : prev - 1);
+      setTimeout(() => reorderNadadores(), 0);
+      return;
+    }
+    
+    const nadadoresEnCalle = nadadores.filter(n => n.calle === calleNum);
+    const nadadoresEnCalleAnterior = nadadores.filter(n => n.calle === calleAnterior);
+    
+    if (nadadoresEnCalle.length > 0) {
+      const maxPosEnCalleAnterior = nadadoresEnCalleAnterior.length > 0 
+        ? Math.max(...nadadoresEnCalleAnterior.map(n => n.posicion)) 
+        : 0;
+      
+      setNadadores(prev => prev.map(n => {
+        if (n.calle === calleNum) {
+          return { ...n, calle: calleAnterior, posicion: maxPosEnCalleAnterior + 1 };
+        }
+        return n;
+      }));
+    }
+    
+    setCalles(prev => prev === '' ? 1 : prev - 1);
+    setTimeout(() => reorderNadadores(), 0);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedNadador(null);
+    setDragOverTarget(null);
+  };
+
+  const addNewPosition = () => {
+    const newPos = getMaxPosicion() + 1;
+    if (calles === '' || calles < 1) {
+      setCalles(1);
+    }
+  };
+
+  const addNewLane = () => {
+    setCalles(prev => prev === '' ? 2 : prev + 1);
+  };
+
+  const reorderNadadores = () => {
+    setNadadores(prev => {
+      const nadadoresPorCalle = new Map<number, NadadorConfig[]>();
+      
+      prev.forEach(n => {
+        if (!nadadoresPorCalle.has(n.calle)) {
+          nadadoresPorCalle.set(n.calle, []);
+        }
+        nadadoresPorCalle.get(n.calle)!.push(n);
+      });
+      
+      const result: NadadorConfig[] = [];
+      
+      nadadoresPorCalle.forEach((nadadoresEnCalle, calle) => {
+        const sorted = nadadoresEnCalle.sort((a, b) => a.posicion - b.posicion);
+        sorted.forEach((n, idx) => {
+          result.push({ ...n, posicion: idx + 1 });
+        });
+      });
+      
+      return result;
+    });
+  };
+
+  const getMaxPosicion = (calle?: number) => {
     if (nadadores.length === 0) return 1;
-    return Math.max(...nadadores.map(n => n.posicion));
+    const filtered = calle !== undefined 
+      ? nadadores.filter(n => n.calle === calle)
+      : nadadores;
+    if (filtered.length === 0) return 1;
+    return Math.max(...filtered.map(n => n.posicion));
   };
 
   const iniciarSerie = () => {
@@ -212,6 +403,7 @@ export default function CronometroPage() {
     }
     
     const sortedNadadores = [...nadadores].sort((a, b) => a.posicion - b.posicion);
+    const parcialesValue = getParciales();
     
     const initialTimers: TimerState[] = sortedNadadores.map(nadador => ({
       nadadorId: nadador.id,
@@ -219,8 +411,8 @@ export default function CronometroPage() {
       calle: nadador.calle,
       posicion: nadador.posicion,
       distancia,
-      parciales,
-      distanciaParcial: Math.round(distancia / parciales),
+      parciales: parcialesValue,
+      distanciaParcial: parcialesValue === 1 ? Math.round(distancia / 2) : (parcialesValue > 0 ? Math.round(distancia / parcialesValue) : distancia),
       estado: 'pending',
       tiempoInicio: null,
       tiempoFin: null,
@@ -234,6 +426,171 @@ export default function CronometroPage() {
     setTimersIniciados(true);
     setCronometroIniciado(false);
     setActiveTab('ejecutar');
+  };
+
+  const iniciarSeries = () => {
+    if (nadadores.length === 0) {
+      alert('Añade al menos un nadador');
+      return;
+    }
+    
+    const tiemposIniciales = new Map<string, (number | null)[]>();
+    nadadores.forEach(n => {
+      tiemposIniciales.set(n.id, []);
+    });
+    setTiemposRegistrados(tiemposIniciales);
+    setRepeticionActual(1);
+    setSerieEnCurso(true);
+    setTimersIniciados(true);
+    setCronometroIniciado(false);
+    
+    const sortedNadadores = [...nadadores].sort((a, b) => a.posicion - b.posicion);
+    const initialTimers: TimerState[] = sortedNadadores.map(nadador => ({
+      nadadorId: nadador.id,
+      nombre: nadador.nombre,
+      calle: nadador.calle,
+      posicion: nadador.posicion,
+      distancia: getSerieDistancia(),
+      parciales: 0,
+      distanciaParcial: getSerieDistancia(),
+      estado: 'pending',
+      tiempoInicio: null,
+      tiempoFin: null,
+      laps: [],
+      tiempoActual: 0,
+      countdown: null,
+    }));
+    
+    setTimers(initialTimers);
+    timersRef.current = initialTimers;
+    setActiveTab('ejecutar');
+  };
+
+  const startCronometroSeries = () => {
+    if (!serieEnCurso) return;
+    
+    const distanciaReal = serieDistanciaBase === '' ? 50 : serieDistanciaBase;
+    const repeticionesReal = serieRepeticiones === '' ? 4 : serieRepeticiones;
+    
+    setCronometroIniciado(true);
+    setCronometroGlobalActivo(true);
+    setTiempoGlobalInicio(Date.now());
+    startTimeRef.current = Date.now();
+    
+    const sortedNadadores = [...nadadores].sort((a, b) => a.posicion - b.posicion);
+    
+    const initialTimers: TimerState[] = sortedNadadores.map(nadador => ({
+      nadadorId: nadador.id,
+      nombre: nadador.nombre,
+      calle: nadador.calle,
+      posicion: nadador.posicion,
+      distancia: distanciaReal,
+      parciales: 0,
+      distanciaParcial: distanciaReal,
+      estado: 'running',
+      tiempoInicio: Date.now(),
+      tiempoFin: null,
+      laps: [],
+      tiempoActual: 0,
+      countdown: null,
+    }));
+    
+    setTimers(initialTimers);
+    timersRef.current = initialTimers;
+    
+    if (sonidoActivo) {
+      playBeep(880, 200);
+      vibrate(100);
+    }
+  };
+
+  const registrarTiempoSeries = (nadadorId: string) => {
+    const timer = timers.find(t => t.nadadorId === nadadorId);
+    if (!timer || timer.estado !== 'running' || !timer.tiempoInicio) return;
+    
+    const tiempoRegistrado = Date.now() - timer.tiempoInicio;
+    
+    setTiemposRegistrados(prev => {
+      const newTiempos = new Map(prev);
+      const tiempos = newTiempos.get(nadadorId) || [];
+      tiempos[repeticionActual - 1] = tiempoRegistrado;
+      newTiempos.set(nadadorId, tiempos);
+      return newTiempos;
+    });
+    
+    setTimers(prev => prev.map(t => {
+      if (t.nadadorId === nadadorId) {
+        return {
+          ...t,
+          estado: 'finished' as const,
+          tiempoFin: Date.now(),
+          tiempoActual: tiempoRegistrado,
+        };
+      }
+      return t;
+    }));
+    
+    if (sonidoActivo) {
+      playBeep(600, 80);
+      vibrate(30);
+    }
+  };
+
+  const getSerieRepeticiones = (): number => serieRepeticiones === '' ? 4 : serieRepeticiones;
+  const getSerieDistancia = (): number => serieDistanciaBase === '' ? 50 : serieDistanciaBase;
+
+  const siguienteRepeticion = () => {
+    const todosTerminaron = timers.every(t => t.estado === 'finished');
+    
+    if (repeticionActual >= getSerieRepeticiones()) {
+      setSerieEnCurso(false);
+      setCronometroIniciado(false);
+      setActiveTab('resultados');
+      return;
+    }
+    
+    setRepeticionActual(prev => prev + 1);
+    setCronometroIniciado(false);
+    setTimers(prev => prev.map(t => ({
+      ...t,
+      estado: 'pending' as const,
+      tiempoInicio: null,
+      tiempoFin: null,
+      tiempoActual: 0,
+    })));
+  };
+
+  const reiniciarSeries = () => {
+    const tiemposIniciales = new Map<string, (number | null)[]>();
+    nadadores.forEach(n => {
+      tiemposIniciales.set(n.id, []);
+    });
+    setTiemposRegistrados(tiemposIniciales);
+    setRepeticionActual(1);
+    setCronometroIniciado(false);
+    setTimers([]);
+  };
+
+  const getEvolucion = (tiempos: (number | null)[], repActual: number): string => {
+    if (repActual <= 1) return '';
+    const tiempoActual = tiempos[repActual - 1];
+    const tiempoAnterior = tiempos[repActual - 2];
+    
+    if (tiempoActual === null || tiempoAnterior === null) return '';
+    if (tiempoActual < tiempoAnterior) return '↓';
+    if (tiempoActual > tiempoAnterior) return '↑';
+    return '=';
+  };
+
+  const getEvolucionColor = (tiempos: (number | null)[], repActual: number): string => {
+    if (repActual <= 1) return '';
+    const tiempoActual = tiempos[repActual - 1];
+    const tiempoAnterior = tiempos[repActual - 2];
+    
+    if (tiempoActual === null || tiempoAnterior === null) return '';
+    if (tiempoActual < tiempoAnterior) return 'text-green-600';
+    if (tiempoActual > tiempoAnterior) return 'text-red-600';
+    return 'text-gray-600';
   };
 
   const startCronometro = () => {
@@ -329,6 +686,25 @@ export default function CronometroPage() {
     };
   }, [timersIniciados, cronometroIniciado, updateTimers]);
 
+  // Actualizar timers para Series
+  useEffect(() => {
+    if (!cronometroIniciado || cronometroModo !== 'series') return;
+    
+    const interval = setInterval(() => {
+      setTimers(prev => prev.map(timer => {
+        if (timer.estado === 'running' && timer.tiempoInicio) {
+          return {
+            ...timer,
+            tiempoActual: Date.now() - timer.tiempoInicio,
+          };
+        }
+        return timer;
+      }));
+    }, 10);
+    
+    return () => clearInterval(interval);
+  }, [cronometroIniciado, cronometroModo]);
+
   const marcarLap = (nadadorId: string) => {
     setTimers(prev => prev.map(timer => {
       if (timer.nadadorId === nadadorId && timer.estado === 'running' && timer.tiempoInicio) {
@@ -408,12 +784,26 @@ export default function CronometroPage() {
     });
   };
 
-  const clientesFiltrados = clientes.filter(c => 
-    c.nombre.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const clientesFiltrados = clientes.filter(c => {
+    const matchesSearch = c.nombre.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesGrupo = selectedGrupo === 'todos' || 
+      (selectedGrupo === 'sin_grupo' && !c.grupoId) ||
+      c.grupoId === selectedGrupo;
+    return matchesSearch && matchesGrupo;
+  });
 
   const nadadoresOrdenadosPorPosicion = [...nadadores].sort((a, b) => a.posicion - b.posicion);
-  const maxPosicion = getMaxPosicion();
+  
+  const getMaxPosicionesPorCalle = () => {
+    const posicionesPorCalle = new Map<number, number>();
+    nadadores.forEach(n => {
+      const current = posicionesPorCalle.get(n.calle) || 0;
+      posicionesPorCalle.set(n.calle, Math.max(current, n.posicion));
+    });
+    return posicionesPorCalle;
+  };
+  const posicionesPorCalle = getMaxPosicionesPorCalle();
+  const maxPosicion = Math.max(...posicionesPorCalle.values(), 1);
 
   if (loading) {
     return (
@@ -431,14 +821,50 @@ export default function CronometroPage() {
             🏊 Cronómetro
           </h1>
         </div>
-        {timersIniciados && (
-          <button
-            onClick={() => setSonidoActivo(!sonidoActivo)}
-            className={`p-2 rounded-lg ${sonidoActivo ? 'bg-ocean-100 text-ocean-600' : 'bg-gray-100 text-gray-400'}`}
-          >
-            {sonidoActivo ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
-          </button>
-        )}
+        <button
+          onClick={() => setSonidoActivo(!sonidoActivo)}
+          className={`p-2 rounded-lg ${sonidoActivo ? 'bg-ocean-100 text-ocean-600' : 'bg-gray-100 text-gray-400'}`}
+        >
+          {sonidoActivo ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+        </button>
+      </div>
+
+      {/* Selector de modo */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => {
+            setCronometroModo('mmp');
+            setNadadores([]);
+            setTimers([]);
+            timersRef.current = [];
+            setTimersIniciados(false);
+            setActiveTab('configurar');
+          }}
+          className={`flex-1 py-3 px-4 rounded-lg font-semibold text-center ${
+            cronometroModo === 'mmp'
+              ? 'bg-ocean-600 text-white'
+              : 'bg-white text-ocean-600 border border-ocean-200 hover:bg-ocean-50'
+          }`}
+        >
+          MMP
+        </button>
+        <button
+          onClick={() => {
+            setCronometroModo('series');
+            setNadadores([]);
+            setTimers([]);
+            timersRef.current = [];
+            setTimersIniciados(false);
+            setActiveTab('configurar');
+          }}
+          className={`flex-1 py-3 px-4 rounded-lg font-semibold text-center ${
+            cronometroModo === 'series'
+              ? 'bg-ocean-600 text-white'
+              : 'bg-white text-ocean-600 border border-ocean-200 hover:bg-ocean-50'
+          }`}
+        >
+          Series
+        </button>
       </div>
 
       {/* Tabs */}
@@ -484,64 +910,65 @@ export default function CronometroPage() {
       {/* CONFIGURAR */}
       {activeTab === 'configurar' && (
         <div className="space-y-4">
-          {/* Configuración básica */}
-          <div className="bg-white rounded-xl shadow-sm p-4">
-            <h2 className="font-semibold text-ocean-800 mb-4">Configuración</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-ocean-700 mb-2">Calles</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={calles}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val === '') {
-                      setCalles('');
-                    } else {
-                      const num = parseInt(val);
-                      if (!isNaN(num)) {
-                        setCalles(Math.min(8, Math.max(1, num)));
+          {/* Configuración básica MMP */}
+          {cronometroModo === 'mmp' && (
+            <div className="bg-white rounded-xl shadow-sm p-4">
+              <h2 className="font-semibold text-ocean-800 mb-4">Configuración</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Calles</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={calles}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') {
+                        setCalles('');
+                      } else {
+                        const num = parseInt(val);
+                        if (!isNaN(num)) {
+                          setCalles(Math.min(8, Math.max(1, num)));
+                        }
                       }
-                    }
-                  }}
-                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-                  placeholder="1"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-ocean-700 mb-2">Intervalo (s)</label>
-                {!showCustomIntervalo ? (
-                  <select
-                    value={intervalo}
-                    onChange={(e) => setIntervalo(parseInt(e.target.value))}
+                    }}
                     className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-                  >
-                    {INTERVALOS.map(i => (
-                      <option key={i} value={i}>{i} segundos</option>
-                    ))}
-                    <option value="custom">Otro...</option>
-                  </select>
-                ) : (
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      min={1}
-                      value={customIntervalo}
-                      onChange={(e) => setCustomIntervalo(e.target.value)}
-                      className="flex-1 px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
-                      placeholder="Segundos"
-                    />
-                    <button
-                      onClick={() => setShowCustomIntervalo(false)}
-                      className="p-3 bg-ocean-100 text-ocean-600 rounded-lg"
+                    placeholder="1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Intervalo (s)</label>
+                  {!showCustomIntervalo ? (
+                    <select
+                      value={intervalo}
+                      onChange={(e) => setIntervalo(parseInt(e.target.value))}
+                      className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
                     >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
+                      {INTERVALOS.map(i => (
+                        <option key={i} value={i}>{i} segundos</option>
+                      ))}
+                      <option value="custom">Otro...</option>
+                    </select>
+                  ) : (
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        value={customIntervalo}
+                        onChange={(e) => setCustomIntervalo(e.target.value)}
+                        className="flex-1 px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                        placeholder="Segundos"
+                      />
+                      <button
+                        onClick={() => setShowCustomIntervalo(false)}
+                        className="p-3 bg-ocean-100 text-ocean-600 rounded-lg"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               <div>
                 <label className="block text-sm font-medium text-ocean-700 mb-2">Distancia (m)</label>
                 <select
@@ -558,32 +985,186 @@ export default function CronometroPage() {
                 <label className="block text-sm font-medium text-ocean-700 mb-2">Parciales</label>
                 <input
                   type="number"
-                  min={1}
+                  min={0}
                   max={20}
                   value={parciales}
                   onChange={(e) => {
-                    const num = parseInt(e.target.value);
-                    if (!isNaN(num) && num > 0) {
-                      setParciales(Math.min(20, num));
+                    const val = e.target.value;
+                    if (val === '') {
+                      setParciales('');
+                    } else {
+                      const num = parseInt(val);
+                      if (!isNaN(num) && num >= 0) {
+                        setParciales(Math.min(20, num));
+                      }
                     }
                   }}
                   className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  placeholder="0"
                 />
                 <div className="text-xs text-ocean-500 mt-1">
-                  {Math.round(distancia / parciales)}m cada parcial
+                  {getParciales() === 0 
+                    ? 'Sin parciales' 
+                    : getParciales() === 1 
+                      ? `Intermedio a ${Math.round(distancia / 2)}m` 
+                      : `${Math.round(distancia / getParciales())}m cada parcial`}
                 </div>
               </div>
             </div>
-          </div>
+            </div>
+          )}
 
-          {/* Grid de asignación */}
-          <div className="bg-white rounded-xl shadow-sm p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold text-ocean-800">Nadadores por Calle y Posición</h2>
-              <div className="text-sm text-ocean-500">
-                Intervalo: {getIntervalo()}s entre posiciones
+          {/* Configuración Series */}
+          {cronometroModo === 'series' && (
+            <div className="bg-white rounded-xl shadow-sm p-4">
+              <h2 className="font-semibold text-ocean-800 mb-4">Configuración de Series</h2>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Calles</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={calles}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') {
+                        setCalles('');
+                      } else {
+                        const num = parseInt(val);
+                        if (!isNaN(num)) {
+                          setCalles(Math.min(8, Math.max(1, num)));
+                        }
+                      }
+                    }}
+                    onFocus={(e) => e.target.select()}
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                    placeholder="1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Intervalo (s)</label>
+                  <select
+                    value={intervalo}
+                    onChange={(e) => setIntervalo(parseInt(e.target.value))}
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  >
+                    {INTERVALOS.map(i => (
+                      <option key={i} value={i}>{i} segundos</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Repeticiones</label>
+                  <input
+                    type="number"
+                    value={serieRepeticiones}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') {
+                        setSerieRepeticiones('');
+                      } else {
+                        const num = parseInt(val);
+                        if (!isNaN(num)) {
+                          setSerieRepeticiones(num);
+                        }
+                      }
+                    }}
+                    onFocus={(e) => e.target.select()}
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Distancia (m)</label>
+                  <input
+                    type="number"
+                    value={serieDistanciaBase}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') {
+                        setSerieDistanciaBase('');
+                      } else {
+                        const num = parseInt(val);
+                        if (!isNaN(num)) {
+                          setSerieDistanciaBase(num);
+                        }
+                      }
+                    }}
+                    onFocus={(e) => e.target.select()}
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-ocean-700 mb-2">Tiempo límite</label>
+                  <input
+                    type="text"
+                    value={serieTiempo}
+                    onChange={(e) => setSerieTiempo(e.target.value)}
+                    className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                    placeholder="01:30"
+                  />
+                  <div className="text-xs text-ocean-500 mt-1">
+                    mm:ss
+                  </div>
+                </div>
+              </div>
+              
+              <div className="mt-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={serieDistanciasDiferentes}
+                    onChange={(e) => setSerieDistanciasDiferentes(e.target.checked)}
+                    className="w-5 h-5 text-ocean-600 rounded focus:ring-ocean-500"
+                  />
+                  <span className="text-sm font-medium text-ocean-700">Distancias diferentes por repetición</span>
+                </label>
+              </div>
+              
+              {/* Distancias diferentes */}
+              {serieDistanciasDiferentes && (
+                <div className="mt-4 p-4 bg-ocean-50 rounded-lg">
+                  <p className="text-sm font-medium text-ocean-700 mb-2">Configurar distancias por repetición:</p>
+                  <div className="grid grid-cols-5 md:grid-cols-10 gap-2">
+                    {Array.from({ length: getSerieRepeticiones() }, (_, i) => i + 1).map((rep) => (
+                      <div key={rep} className="text-center">
+                        <label className="text-xs text-ocean-600 block mb-1">Rep {rep}</label>
+                        <input
+                          type="number"
+                          min={25}
+                          step={25}
+                          value={serieTiemposPersonalizados[rep - 1] || ''}
+                          onChange={(e) => {
+                            const newTiempos = [...serieTiemposPersonalizados];
+                            newTiempos[rep - 1] = e.target.value;
+                            setSerieTiemposPersonalizados(newTiempos);
+                          }}
+                          className="w-full px-2 py-2 border border-ocean-200 rounded-lg text-center text-sm"
+                          placeholder="m"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Resumen */}
+              <div className="mt-4 p-4 bg-green-50 rounded-lg">
+                <p className="text-center font-semibold text-green-800">
+                  {getSerieRepeticiones()} × {serieDistanciasDiferentes ? 'distancias variables' : `${getSerieDistancia()}m`} @ {serieTiempo}
+                </p>
               </div>
             </div>
+          )}
+
+          {/* Grid de asignación MMP */}
+          {cronometroModo === 'mmp' && (
+            <div className="bg-white rounded-xl shadow-sm p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-ocean-800">Nadadores por Calle y Posición</h2>
+                <div className="text-sm text-ocean-500">
+                  Intervalo: {getIntervalo()}s entre posiciones
+                </div>
+              </div>
 
             <div className="overflow-x-auto">
               <div className="min-w-[600px]">
@@ -605,13 +1186,38 @@ export default function CronometroPage() {
                 ) : (
                   Array.from({ length: calles }, (_, i) => i + 1).map(calleNum => (
                     <div key={calleNum} className="flex items-center py-2 border-b border-ocean-100">
-                      <div className="w-20 font-medium text-ocean-800">Calle {calleNum}</div>
+                      <div className="w-20 flex items-center gap-1">
+                        <span className="font-medium text-ocean-800">Calle {calleNum}</span>
+                        {calles > 1 && (
+                          <button
+                            onClick={() => removeLane(calleNum)}
+                            className="text-ocean-400 hover:text-red-500 ml-auto"
+                            title="Eliminar calle"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
                       {Array.from({ length: Math.max(6, maxPosicion) }, (_, idx) => idx + 1).map(pos => {
                         const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
+                        const isDragOver = dragOverTarget && typeof dragOverTarget !== 'string' && dragOverTarget.calle === calleNum && dragOverTarget.posicion === pos;
+                        const isDragging = draggedNadador?.id === nadador?.id;
+                        
                         return (
-                          <div key={pos} className="flex-1 px-1">
+                          <div 
+                            key={pos} 
+                            className={`flex-1 px-1 transition-colors ${isDragOver ? 'bg-ocean-200' : ''}`}
+                            onDragOver={(e) => handleDragOver(e, calleNum, pos)}
+                            onDragLeave={handleDragLeave}
+                            onDrop={(e) => handleDrop(e, calleNum, pos)}
+                          >
                             {nadador ? (
-                              <div className="bg-ocean-100 rounded-lg p-2 flex items-center justify-between">
+                              <div 
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, nadador)}
+                                onDragEnd={handleDragEnd}
+                                className={`bg-ocean-100 rounded-lg p-2 flex items-center justify-between cursor-move ${isDragging ? 'opacity-50' : ''}`}
+                              >
                                 <span className="text-sm font-medium text-ocean-800 truncate">{nadador.nombre}</span>
                                 <button
                                   onClick={() => removeNadador(nadador.id)}
@@ -637,24 +1243,199 @@ export default function CronometroPage() {
               </div>
             </div>
 
-            {/* Botón añadir posición extra */}
+            {/* Zona para añadir calle */}
+            <div 
+              className={`mt-4 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                dragOverTarget === 'addCalle' 
+                  ? 'border-ocean-500 bg-ocean-100' 
+                  : 'border-ocean-300 hover:border-ocean-500 hover:bg-ocean-50'
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOverTarget('addCalle');
+              }}
+              onDragLeave={() => setDragOverTarget(null)}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (draggedNadador) {
+                  const nuevaCalle = (calles === '' ? 1 : Number(calles)) + 1;
+                  setCalles(nuevaCalle);
+                  setNadadores(prev => prev.map(n => 
+                    n.id === draggedNadador.id 
+                      ? { ...n, calle: nuevaCalle, posicion: 1 }
+                      : n
+                  ));
+                } else {
+                  addNewLane();
+                }
+                setDragOverTarget(null);
+              }}
+              onClick={addNewLane}
+            >
+              <Plus className="w-5 h-5 mx-auto text-ocean-400" />
+              <span className="text-sm text-ocean-500">Arrastra aquí para añadir calle</span>
+            </div>
+
+            {/* Botón reordenar */}
             <button
-              onClick={() => setNadadores([...nadadores])}
+              onClick={reorderNadadores}
               className="mt-4 flex items-center gap-2 text-ocean-600 hover:text-ocean-800"
             >
-              <Plus className="w-4 h-4" />
-              <span className="text-sm">Añadir más posiciones si es necesario</span>
+              <RotateCcw className="w-4 h-4" />
+              <span className="text-sm">Reordenar posiciones</span>
             </button>
           </div>
+          )}
 
-          {/* Botón iniciar */}
-          {nadadores.length > 0 && (
+          {/* Botón iniciar MMP */}
+          {cronometroModo === 'mmp' && nadadores.length > 0 && (
             <button
               onClick={iniciarSerie}
               className="w-full py-4 bg-ocean-600 text-white rounded-xl font-semibold text-lg flex items-center justify-center gap-2 hover:bg-ocean-700"
             >
               <Play className="w-6 h-6" />
-              Iniciar Serie
+              Iniciar Serie MMP
+            </button>
+          )}
+
+          {/* Grid de asignación Series */}
+          {cronometroModo === 'series' && (
+            <div className="bg-white rounded-xl shadow-sm p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-ocean-800">Nadadores por Calle y Posición</h2>
+                <div className="text-sm text-ocean-500">
+                  Intervalo: {getIntervalo()}s entre posiciones
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <div className="min-w-[600px]">
+                  {/* Header de posiciones */}
+                  <div className="flex border-b border-ocean-200 pb-2 mb-2">
+                    <div className="w-20 font-medium text-ocean-600 text-sm">Calle</div>
+                    {Array.from({ length: Math.max(6, maxPosicion) }, (_, i) => i + 1).map(pos => (
+                      <div key={pos} className="flex-1 text-center font-medium text-ocean-600 text-sm">
+                        Pos {pos}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Filas de calles */}
+                  {calles === '' ? (
+                    <div className="text-center py-4 text-ocean-400">
+                      Ingresa el número de calles
+                    </div>
+                  ) : (
+                    Array.from({ length: calles }, (_, i) => i + 1).map(calleNum => (
+                      <div key={calleNum} className="flex items-center py-2 border-b border-ocean-100">
+                        <div className="w-20 flex items-center gap-1">
+                          <span className="font-medium text-ocean-800">Calle {calleNum}</span>
+                          {calles > 1 && (
+                            <button
+                              onClick={() => removeLane(calleNum)}
+                              className="text-ocean-400 hover:text-red-500 ml-auto"
+                              title="Eliminar calle"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                        {Array.from({ length: Math.max(6, maxPosicion) }, (_, idx) => idx + 1).map(pos => {
+                          const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
+                          const isDragOver = dragOverTarget && typeof dragOverTarget !== 'string' && dragOverTarget.calle === calleNum && dragOverTarget.posicion === pos;
+                          const isDragging = draggedNadador?.id === nadador?.id;
+                          
+                          return (
+                            <div 
+                              key={pos} 
+                              className={`flex-1 px-1 transition-colors ${isDragOver ? 'bg-purple-200' : ''}`}
+                              onDragOver={(e) => handleDragOver(e, calleNum, pos)}
+                              onDragLeave={handleDragLeave}
+                              onDrop={(e) => handleDrop(e, calleNum, pos)}
+                            >
+                              {nadador ? (
+                                <div 
+                                  draggable
+                                  onDragStart={(e) => handleDragStart(e, nadador)}
+                                  onDragEnd={handleDragEnd}
+                                  className={`bg-purple-100 rounded-lg p-2 flex items-center justify-between cursor-move ${isDragging ? 'opacity-50' : ''}`}
+                                >
+                                  <span className="text-sm font-medium text-purple-800 truncate">{nadador.nombre}</span>
+                                  <button
+                                    onClick={() => removeNadador(nadador.id)}
+                                    className="text-purple-400 hover:text-red-500"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setShowNadadorSelector({ calle: calleNum, posicion: pos })}
+                                  className="w-full p-2 border-2 border-dashed border-purple-200 rounded-lg text-purple-400 hover:border-purple-400 hover:text-purple-600 text-sm"
+                                >
+                                  + Añadir
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Zona para añadir calle */}
+              <div 
+                className={`mt-4 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                  dragOverTarget === 'addCalle' 
+                    ? 'border-purple-500 bg-purple-100' 
+                    : 'border-purple-300 hover:border-purple-500 hover:bg-purple-50'
+                }`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOverTarget('addCalle');
+                }}
+                onDragLeave={() => setDragOverTarget(null)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (draggedNadador) {
+                    const nuevaCalle = (calles === '' ? 1 : Number(calles)) + 1;
+                    setCalles(nuevaCalle);
+                    setNadadores(prev => prev.map(n => 
+                      n.id === draggedNadador.id 
+                        ? { ...n, calle: nuevaCalle, posicion: 1 }
+                        : n
+                    ));
+                  } else {
+                    addNewLane();
+                  }
+                  setDragOverTarget(null);
+                }}
+                onClick={addNewLane}
+              >
+                <Plus className="w-5 h-5 mx-auto text-purple-400" />
+                <span className="text-sm text-purple-500">Arrastra aquí para añadir calle</span>
+              </div>
+
+              <button
+                onClick={reorderNadadores}
+                className="mt-4 flex items-center gap-2 text-purple-600 hover:text-purple-800"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span className="text-sm">Reordenar posiciones</span>
+              </button>
+            </div>
+          )}
+
+          {/* Botón iniciar Series */}
+          {cronometroModo === 'series' && nadadores.length > 0 && (
+            <button
+              onClick={iniciarSeries}
+              className="w-full py-4 bg-purple-600 text-white rounded-xl font-semibold text-lg flex items-center justify-center gap-2 hover:bg-purple-700"
+            >
+              <Play className="w-6 h-6" />
+              Iniciar Series
             </button>
           )}
         </div>
@@ -682,6 +1463,21 @@ export default function CronometroPage() {
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
               />
+            </div>
+            
+            {/* Filtro por grupos */}
+            <div className="mb-4">
+              <select
+                value={selectedGrupo}
+                onChange={(e) => setSelectedGrupo(e.target.value)}
+                className="w-full px-4 py-2 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500 text-sm"
+              >
+                <option value="todos">Todos los grupos</option>
+                <option value="sin_grupo">Sin grupo</option>
+                {grupos.map(grupo => (
+                  <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
+                ))}
+              </select>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2">
@@ -711,8 +1507,8 @@ export default function CronometroPage() {
         </div>
       )}
 
-      {/* EJECUTAR */}
-      {activeTab === 'ejecutar' && timers.length > 0 && (
+      {/* EJECUTAR MMP */}
+      {activeTab === 'ejecutar' && cronometroModo === 'mmp' && timers.length > 0 && (
         <div className="space-y-2">
           {/* Botón START flotante */}
           {!cronometroIniciado && !todosFinalizados && (
@@ -728,7 +1524,7 @@ export default function CronometroPage() {
           {/* Info bar */}
           <div className="bg-ocean-600 text-white px-3 py-2 flex items-center justify-between text-xs sm:text-sm">
             <div className="flex items-center gap-2">
-              <span className="font-bold">{distancia}m × {parciales}</span>
+              <span className="font-bold">{distancia}m {getParciales() === 0 ? '(sin parciales)' : `× ${getParciales()}`}</span>
               <span className="opacity-75">|</span>
               <span>{timers.length}🚴</span>
               <span className="opacity-75">|</span>
@@ -819,8 +1615,143 @@ export default function CronometroPage() {
         </div>
       )}
 
-      {/* RESULTADOS */}
-      {activeTab === 'resultados' && timers.length > 0 && (
+      {/* EJECUTAR Series */}
+      {activeTab === 'ejecutar' && cronometroModo === 'series' && serieEnCurso && (
+        <div className="space-y-4">
+          {/* Info bar */}
+          <div className="bg-purple-600 text-white px-3 py-2 flex items-center justify-between text-xs sm:text-sm">
+            <div className="flex items-center gap-2">
+              <span className="font-bold">Serie {repeticionActual}/{getSerieRepeticiones()}</span>
+              <span className="opacity-75">|</span>
+              <span>{serieDistanciasDiferentes ? 'distancias variables' : `${getSerieDistancia()}m`}</span>
+              <span className="opacity-75">|</span>
+              <span>Tiempo límite: {serieTiempo}</span>
+            </div>
+            <button onClick={reiniciarSeries} className="p-1 hover:bg-purple-500 rounded">
+              <RotateCcw className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Botón START flotante */}
+          {!cronometroIniciado && timers.length > 0 && (
+            <button
+              onClick={startCronometroSeries}
+              className="fixed bottom-6 right-6 w-16 h-16 bg-green-600 rounded-full shadow-lg flex flex-col items-center justify-center text-white text-xs font-bold hover:bg-green-700 active:scale-95 transition-transform z-50"
+            >
+              <Play className="w-6 h-6 mb-0.5" />
+              START
+            </button>
+          )}
+
+          {/* Cronómetro global */}
+          {cronometroIniciado && serieEnCurso && timers.length > 0 && timers[0]?.tiempoInicio && (
+            <div className="bg-white rounded-xl shadow-sm p-6 text-center">
+              <div className="text-sm text-ocean-500 mb-1">Tiempo actual</div>
+              <div className="text-6xl font-bold font-mono text-ocean-800">
+                {formatTime(timers[0]?.tiempoActual || 0)}
+              </div>
+              <div className="text-sm text-purple-600 mt-2">
+                Límite: {serieTiempo}
+              </div>
+            </div>
+          )}
+
+          {/* Estado: esperando START */}
+          {!cronometroIniciado && timers.length > 0 && (
+            <div className="bg-yellow-50 border-2 border-yellow-300 rounded-xl p-6 text-center">
+              <p className="text-yellow-800 font-semibold text-lg">
+                Nadadores listos. Presiona START para comenzar
+              </p>
+              <p className="text-yellow-600 text-sm mt-2">
+                Repetición {repeticionActual} de {getSerieRepeticiones()}
+              </p>
+            </div>
+          )}
+
+          {/* Tarjetas de nadadores */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {timers.map(timer => {
+              const tiemposNadador = tiemposRegistrados.get(timer.nadadorId) || [];
+              const evolucion = getEvolucion(tiemposNadador, repeticionActual);
+              
+              return (
+                <div 
+                  key={timer.nadadorId}
+                  className={`rounded-xl p-4 ${
+                    timer.estado === 'running' 
+                      ? 'bg-blue-50 border-2 border-blue-300'
+                      : timer.estado === 'finished'
+                      ? 'bg-green-50 border-2 border-green-300'
+                      : 'bg-gray-50 border-2 border-gray-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <h3 className="font-semibold text-ocean-800">{timer.nombre}</h3>
+                      <p className="text-xs text-ocean-500">Calle {timer.calle}</p>
+                    </div>
+                    <div className={`text-3xl font-bold font-mono ${
+                      timer.estado === 'running' 
+                        ? 'text-blue-600'
+                        : timer.estado === 'finished'
+                        ? 'text-green-600'
+                        : 'text-gray-400'
+                    }`}>
+                      {timer.estado === 'pending' 
+                        ? '--:--' 
+                        : formatTime(timer.tiempoActual)}
+                    </div>
+                  </div>
+                  
+                  {timer.estado === 'running' && (
+                    <button
+                      onClick={() => registrarTiempoSeries(timer.nadadorId)}
+                      className="w-full py-3 bg-green-600 text-white rounded-lg font-bold active:scale-95"
+                    >
+                      REGISTRAR
+                    </button>
+                  )}
+                  
+                  {timer.estado === 'finished' && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          setTimers(prev => prev.map(t => 
+                            t.nadadorId === timer.nadadorId 
+                              ? { ...t, estado: 'running' as const, tiempoInicio: Date.now() }
+                              : t
+                          ));
+                        }}
+                        className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold"
+                      >
+                        Repetir
+                      </button>
+                      {evolucion && (
+                        <div className={`px-3 py-2 rounded-lg text-xl font-bold ${getEvolucionColor(tiemposNadador, repeticionActual)}`}>
+                          {evolucion}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Botón siguiente repetición */}
+          {cronometroIniciado && timers.every(t => t.estado === 'finished') && (
+            <button
+              onClick={siguienteRepeticion}
+              className="w-full py-4 bg-purple-600 text-white rounded-xl font-semibold text-lg flex items-center justify-center gap-2 hover:bg-purple-700"
+            >
+              {repeticionActual >= getSerieRepeticiones() ? 'Ver Resultados' : 'Siguiente Repetición'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* RESULTADOS MMP */}
+      {activeTab === 'resultados' && cronometroModo === 'mmp' && timers.length > 0 && (
         <div className="space-y-4">
           <div className="bg-white rounded-xl shadow-sm p-4">
             <div className="flex items-center justify-between mb-4">
@@ -902,7 +1833,7 @@ export default function CronometroPage() {
                           </>
                         )}
                         {(() => {
-                          const intermedios = calcularIntermedios(timer.laps, timer.distancia, timer.distanciaParcial, timer.tiempoActual);
+                          const intermedios = calcularIntermedios(timer.laps, timer.distancia, timer.distanciaParcial, timer.tiempoActual, timer.parciales);
                           if (intermedios.length > 0) {
                             return (
                               <>
@@ -924,6 +1855,79 @@ export default function CronometroPage() {
                     )}
                   </div>
                 ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RESULTADOS Series */}
+      {activeTab === 'resultados' && cronometroModo === 'series' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl shadow-sm p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-ocean-800 text-lg">Resultados - Series Progresivas</h2>
+              <button
+                onClick={reiniciarSeries}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Nueva Serie
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[600px]">
+                <thead>
+                  <tr className="bg-ocean-100">
+                    <th className="px-4 py-2 text-left font-semibold text-ocean-700">Nadador</th>
+                    {Array.from({ length: getSerieRepeticiones() }, (_, i) => i + 1).map((rep: number) => (
+                      <th key={rep} className="px-4 py-2 text-center font-semibold text-ocean-700">
+                        Rep {rep}
+                      </th>
+                    ))}
+                    <th className="px-4 py-2 text-center font-semibold text-ocean-700">Evolución</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {nadadores.map(nadador => {
+                    const tiempos = tiemposRegistrados.get(nadador.id) || [];
+                    return (
+                      <tr key={nadador.id} className="border-b border-ocean-100">
+                        <td className="px-4 py-3 font-medium text-ocean-800">
+                          {nadador.nombre}
+                          <span className="text-xs text-ocean-500 ml-2">C{nadador.calle}</span>
+                        </td>
+                        {Array.from({ length: getSerieRepeticiones() }, (_, i) => i + 1).map((rep: number) => {
+                          const tiempo = tiempos[rep - 1];
+                          const evolucion = getEvolucion(tiempos, rep);
+                          const evolucionColor = getEvolucionColor(tiempos, rep);
+                          return (
+                            <td key={rep} className={`px-4 py-3 text-center ${tiempo === null ? 'text-gray-300' : 'font-mono text-ocean-700'}`}>
+                              {tiempo === null 
+                                ? '-' 
+                                : (
+                                  <span className="flex items-center justify-center gap-1">
+                                    {formatTime(tiempo)}
+                                    {rep > 1 && evolucion && (
+                                      <span className={evolucionColor}>{evolucion}</span>
+                                    )}
+                                  </span>
+                                )}
+                            </td>
+                          );
+                        })}
+                        <td className="px-4 py-3 text-center">
+                          {tiempos.filter(t => t !== null).length >= 2 && (
+                            <span className={getEvolucionColor(tiempos, getSerieRepeticiones())}>
+                              {getEvolucion(tiempos, getSerieRepeticiones())}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
