@@ -23,6 +23,7 @@ import { generateSeriesPDF } from '@/lib/generateSeriesPDF';
 interface Cliente {
   id: string;
   nombre: string;
+  apellido?: string;
   email: string;
   telefono: string;
   objetivo: string;
@@ -74,6 +75,7 @@ export default function EntrenadorClientesPage() {
   const [deletingCliente, setDeletingCliente] = useState<Cliente | null>(null);
   const [clienteFormData, setClienteFormData] = useState({
     nombre: '',
+    apellido: '',
     email: '',
     telefono: '',
     objetivo: '',
@@ -168,6 +170,7 @@ export default function EntrenadorClientesPage() {
           clientesData.push({
             id: docSnap.id,
             nombre: data.nombre || '',
+            apellido: data.apellido || '',
             email: data.email || '',
             telefono: data.telefono || '',
             objetivo: data.objetivo || '',
@@ -298,6 +301,7 @@ export default function EntrenadorClientesPage() {
       const nuevoCliente: Cliente = {
         id: newDoc.id,
         nombre: newClienteFormData.nombre.trim(),
+        apellido: newClienteFormData.apellido.trim(),
         email: newClienteFormData.email.trim(),
         telefono: newClienteFormData.telefono.trim(),
         objetivo: newClienteFormData.objetivo,
@@ -471,7 +475,7 @@ setEditingGrupo(null);
   const descargarPDFSeries = async (sesiones: {id: string; data: any}[]) => {
     if (sesiones.length === 0 || !verTiemposCliente) return;
     
-    const clienteNombre = verTiemposCliente.nombre;
+    const clienteNombre = `${verTiemposCliente.nombre} ${(verTiemposCliente.apellido || '').split(' ')[0]}`.trim();
     
     const sesionesOrdenadas = sesiones
       .map(s => ({
@@ -597,7 +601,7 @@ setEditingGrupo(null);
     setAssigningLoading(true);
     try {
       // Fix iOS Safari: pre-computar URL ANTES del await
-      const nombreCompleto = assigningWorkout.nombre;
+      const nombreCompleto = `${assigningWorkout.nombre} ${(assigningWorkout.apellido || '').split(' ')[0]}`.trim();
       const msg = buildWhatsAppMessage(nombreCompleto, workout, assignDate);
       const tel = formatPhone(assigningWorkout.telefono || '');
       const waUrl = tel
@@ -635,6 +639,7 @@ setEditingGrupo(null);
     setEditingCliente(cliente);
     setClienteFormData({
       nombre: cliente.nombre,
+      apellido: cliente.apellido || '',
       email: cliente.email,
       telefono: cliente.telefono,
       objetivo: cliente.objetivo,
@@ -754,6 +759,7 @@ setEditingGrupo(null);
 
   const filteredBySearch = clientesFiltrados.filter(c => 
     c.nombre.toLowerCase().includes(search.toLowerCase()) ||
+    (c.apellido && c.apellido.toLowerCase().includes(search.toLowerCase())) ||
     c.email.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -912,10 +918,6 @@ setEditingGrupo(null);
               <thead className="bg-ocean-50">
                 <tr>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Cliente</th>
-                  <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Email</th>
-                  <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Teléfono</th>
-                  <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Objetivo</th>
-                  <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Grupo</th>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Precio</th>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Pagado</th>
                   <th className="px-6 py-4 text-left text-sm font-medium text-ocean-700">Acciones</th>
@@ -931,25 +933,10 @@ setEditingGrupo(null);
                             {cliente.nombre.charAt(0).toUpperCase()}
                           </span>
                         </div>
-                        <span className="font-medium text-ocean-800">{cliente.nombre}</span>
+                        <span className="font-medium text-ocean-800">
+                          {cliente.nombre} {cliente.apellido?.split(' ')[0] || ''}
+                        </span>
                       </div>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-ocean-600">{cliente.email}</td>
-                    <td className="px-6 py-4 text-sm text-ocean-600">{cliente.telefono}</td>
-                    <td className="px-6 py-4 text-sm text-ocean-600">
-                      {objetivosMap[cliente.objetivo] || cliente.objetivo}
-                    </td>
-                    <td className="px-6 py-4">
-                      <select
-                        value={cliente.grupoId || ''}
-                        onChange={(e) => updateClienteGrupo(cliente.id, e.target.value)}
-                        className="text-sm bg-ocean-50 border border-ocean-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-ocean-500"
-                      >
-                        <option value="">Sin grupo</option>
-                        {grupos.map((grupo) => (
-                          <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
-                        ))}
-                      </select>
                     </td>
                     <td className="px-6 py-4">
                       {editingPrecio === cliente.id ? (
@@ -1257,6 +1244,15 @@ setEditingGrupo(null);
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Apellido</label>
+                <input
+                  type="text"
+                  value={clienteFormData.apellido}
+                  onChange={(e) => setClienteFormData({...clienteFormData, apellido: e.target.value})}
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-ocean-700 mb-2">Email</label>
                 <input
                   type="email"
@@ -1287,6 +1283,24 @@ setEditingGrupo(null);
                   <option value="crossfit">CrossFit</option>
                 </select>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Grupo</label>
+                <select
+                  value={editingCliente?.grupoId || ''}
+                  onChange={async (e) => {
+                    if (editingCliente) {
+                      await updateClienteGrupo(editingCliente.id, e.target.value);
+                      setEditingCliente({ ...editingCliente, grupoId: e.target.value || null });
+                    }
+                  }}
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                >
+                  <option value="">Sin grupo</option>
+                  {grupos.map((grupo) => (
+                    <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
+                  ))}
+                </select>
+              </div>
               <button
                 onClick={saveEditCliente}
                 className="w-full py-3 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
@@ -1312,7 +1326,7 @@ setEditingGrupo(null);
               </button>
             </div>
             <p className="text-ocean-600 mb-4">
-              ¿Estás seguro de eliminar al cliente <strong>"{deletingCliente.nombre}"</strong>?
+              ¿Estás seguro de eliminar al cliente <strong>"{deletingCliente.nombre} {deletingCliente.apellido?.split(' ')[0] || ''}"</strong>?
             </p>
             <div className="flex gap-3">
               <button
@@ -1424,7 +1438,7 @@ setEditingGrupo(null);
           <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-ocean-800">
-                Historial de {verHistorial.nombre}
+                Historial de {verHistorial.nombre} {verHistorial.apellido?.split(' ')[0] || ''}
               </h2>
               <button
                 onClick={() => setVerHistorial(null)}
@@ -1478,7 +1492,7 @@ setEditingGrupo(null);
           <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[80vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-ocean-800">
-                Tiempos de {verTiemposCliente.nombre}
+                Tiempos de {verTiemposCliente.nombre} {verTiemposCliente.apellido?.split(' ')[0] || ''}
               </h2>
               <button
                 onClick={() => setVerTiemposCliente(null)}
