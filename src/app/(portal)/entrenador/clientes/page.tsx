@@ -16,7 +16,9 @@ import {
   deleteDoc,
   serverTimestamp 
 } from 'firebase/firestore';
-import { Users, UserPlus, Plus, Search, Edit, Trash2, X, Eye, Send, Loader2, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
+import { Users, UserPlus, Plus, Search, Edit, Trash2, X, Eye, Send, Loader2, ChevronLeft, ChevronRight, DollarSign, Clock, Trophy, FileText, Download, Flame, Calendar } from 'lucide-react';
+import { getAllTiemposMMP, getSesionesSeriesConId, eliminarSesionSeries } from '@/lib/firebase/tiempos';
+import { generateSeriesPDF } from '@/lib/generateSeriesPDF';
 
 interface Cliente {
   id: string;
@@ -97,6 +99,13 @@ export default function EntrenadorClientesPage() {
   const [verHistorial, setVerHistorial] = useState<Cliente | null>(null);
   const [historialCargando, setHistorialCargando] = useState(false);
   const [historialData, setHistorialData] = useState<any[]>([]);
+  
+  const [verTiemposCliente, setVerTiemposCliente] = useState<Cliente | null>(null);
+  const [tiemposCargando, setTiemposCargando] = useState(false);
+  const [tiemposMMP, setTiemposMMP] = useState<Map<number, any[]>>(new Map());
+  const [sesionesSeries, setSesionesSeries] = useState<{id: string; data: any}[]>([]);
+  const [tiemposActiveTab, setTiemposActiveTab] = useState<'mmp' | 'series'>('mmp');
+  const [eliminandoSesion, setEliminandoSesion] = useState<string | null>(null);
   
   // Estados para cobros
   const [currentMonth, setCurrentMonth] = useState(() => {
@@ -369,10 +378,123 @@ export default function EntrenadorClientesPage() {
       setGrupos(grupos.map(g => 
         g.id === editingGrupo.id ? { ...g, nombre: editingGrupoNombre.trim() } : g
       ));
-      setEditingGrupo(null);
-      setEditingGrupoNombre('');
+setEditingGrupo(null);
+    setEditingGrupoNombre('');
+  } catch (error) {
+    console.error('Error updating grupo:', error);
+  }
+};
+
+ const formatTime = (ms: number): string => {
+   const totalSeconds = Math.floor(ms / 1000);
+   const minutes = Math.floor(totalSeconds / 60);
+   const seconds = totalSeconds % 60;
+   const centiseconds = Math.floor((ms % 1000) / 10);
+   return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+ };
+
+  const verHistorialWorkouts = (cliente: Cliente) => {
+    setVerHistorial(cliente);
+    setHistorialCargando(true);
+    
+    const fetchHistorial = async () => {
+      try {
+        const historialRef = collection(db, 'historialWorkouts');
+        const q = query(historialRef, where('clienteId', '==', cliente.id));
+        const snapshot = await getDocs(q);
+        
+        const data = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setHistorialData(data);
+      } catch (error) {
+        console.error('Error fetching historial:', error);
+      } finally {
+        setHistorialCargando(false);
+      }
+    };
+    
+    fetchHistorial();
+  };
+
+  const openTiemposCliente = async (cliente: Cliente) => {
+    setVerTiemposCliente(cliente);
+    setTiemposCargando(true);
+    setTiemposActiveTab('mmp');
+    
+    try {
+      const mmp = await getAllTiemposMMP(cliente.id);
+      setTiemposMMP(mmp);
+      
+      const series = await getSesionesSeriesConId(cliente.id);
+      setSesionesSeries(series);
     } catch (error) {
-      console.error('Error updating grupo:', error);
+      console.error('Error fetching tiempos:', error);
+    } finally {
+      setTiemposCargando(false);
+    }
+  };
+
+  const eliminarSesion = async (sesionId: string) => {
+    if (!verTiemposCliente) return;
+    
+    setEliminandoSesion(sesionId);
+    try {
+      await eliminarSesionSeries(verTiemposCliente.id, sesionId);
+      setSesionesSeries(prev => prev.filter(s => s.id !== sesionId));
+    } catch (error) {
+      console.error('Error eliminando sesión:', error);
+    } finally {
+      setEliminandoSesion(null);
+    }
+  };
+
+  const eliminarSesionesDelDia = async (fechaKey: string) => {
+    if (!verTiemposCliente) return;
+    
+    const sesionesDelDia = sesionesSeries.filter(s => new Date(s.data.fecha).toDateString() === fechaKey);
+    
+    setEliminandoSesion(fechaKey);
+    try {
+      for (const sesion of sesionesDelDia) {
+        await eliminarSesionSeries(verTiemposCliente.id, sesion.id);
+      }
+      setSesionesSeries(prev => prev.filter(s => new Date(s.data.fecha).toDateString() !== fechaKey));
+    } catch (error) {
+      console.error('Error eliminando sesiones del día:', error);
+    } finally {
+      setEliminandoSesion(null);
+    }
+  };
+
+  const descargarPDFSeries = async (sesiones: {id: string; data: any}[]) => {
+    if (sesiones.length === 0 || !verTiemposCliente) return;
+    
+    const clienteNombre = verTiemposCliente.nombre;
+    
+    const sesionesOrdenadas = sesiones
+      .map(s => ({
+        distancia: s.data.distancia,
+        tiempos: s.data.tiempos,
+        mejorTiempo: s.data.mejorTiempo,
+        fecha: s.data.fecha instanceof Date ? s.data.fecha : new Date(s.data.fecha),
+      }))
+      .sort((a, b) => b.distancia - a.distancia);
+    
+    const fechaReferencia = sesionesOrdenadas[0]?.fecha || new Date();
+    
+    try {
+      const pdfUrl = await generateSeriesPDF(sesionesOrdenadas, clienteNombre, fechaReferencia);
+      
+      const fechaStr = fechaReferencia.toLocaleDateString('es-ES').replace(/\//g, '-');
+      const a = document.createElement('a');
+      a.href = pdfUrl;
+      a.download = `series_${clienteNombre.replace(/\s+/g, '_')}_${fechaStr}.pdf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(pdfUrl), 1000);
+    } catch (error) {
+      console.error('Error generate PDF:', error);
     }
   };
 
@@ -876,9 +998,16 @@ export default function EntrenadorClientesPage() {
                         <button 
                           onClick={() => verHistorialCliente(cliente)}
                           className="p-2 text-ocean-400 hover:text-ocean-600 hover:bg-ocean-100 rounded-lg"
-                          title="Ver historial"
+                          title="Ver historial workouts"
                         >
                           <Eye className="w-5 h-5" />
+                        </button>
+                        <button 
+                          onClick={() => openTiemposCliente(cliente)}
+                          className="p-2 text-purple-400 hover:text-purple-600 hover:bg-purple-100 rounded-lg"
+                          title="Ver tiempos"
+                        >
+                          <Clock className="w-5 h-5" />
                         </button>
                         <button 
                           onClick={() => setAssigningWorkout(cliente)}
@@ -1337,6 +1466,181 @@ export default function EntrenadorClientesPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Ver Tiempos Cliente Modal */}
+      {verTiemposCliente && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-ocean-800">
+                Tiempos de {verTiemposCliente.nombre}
+              </h2>
+              <button
+                onClick={() => setVerTiemposCliente(null)}
+                className="p-2 text-ocean-400 hover:text-ocean-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Tabs */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setTiemposActiveTab('mmp')}
+                className={`flex-1 py-2 px-4 rounded-lg font-medium ${
+                  tiemposActiveTab === 'mmp'
+                    ? 'bg-ocean-600 text-white'
+                    : 'bg-ocean-100 text-ocean-600'
+                }`}
+              >
+                <Trophy className="w-4 h-4 inline mr-2" />
+                MMP
+              </button>
+              <button
+                onClick={() => setTiemposActiveTab('series')}
+                className={`flex-1 py-2 px-4 rounded-lg font-medium ${
+                  tiemposActiveTab === 'series'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-purple-100 text-purple-600'
+                }`}
+              >
+                <Flame className="w-4 h-4 inline mr-2" />
+                Series
+              </button>
+            </div>
+
+            {tiemposCargando ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-8 h-8 animate-spin text-ocean-600" />
+              </div>
+            ) : tiemposActiveTab === 'mmp' ? (
+              <div className="space-y-4">
+                {tiemposMMP.size === 0 ? (
+                  <p className="text-ocean-500 text-center py-8">
+                    Este cliente no tiene tiempos MMP guardados
+                  </p>
+                ) : (
+                  Array.from(tiemposMMP.keys()).sort((a, b) => a - b).map(distancia => {
+                    const tiempos = tiemposMMP.get(distancia) || [];
+                    const mejor = Math.min(...tiempos.map(t => t.tiempo));
+                    return (
+                      <div key={distancia} className="bg-ocean-50 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="font-semibold text-ocean-800">{distancia}m</h3>
+                          <span className="text-lg font-bold font-mono text-green-600">
+                            {formatTime(mejor)}
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          {tiempos.slice(0, 10).map((t, idx) => (
+                            <div key={idx} className="flex justify-between text-sm">
+                              <span className="text-ocean-500">
+                                {new Date(t.fecha).toLocaleDateString('es-ES')}
+                              </span>
+                              <span className="font-mono text-ocean-700">
+                                {formatTime(t.tiempo)}
+                              </span>
+                            </div>
+                          ))}
+                          {tiempos.length > 10 && (
+                            <p className="text-xs text-ocean-400 text-center">
+                              +{tiempos.length - 10} más...
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {sesionesSeries.length === 0 ? (
+                  <p className="text-ocean-500 text-center py-8">
+                    No hay sesiones de series en las últimas 48h
+                  </p>
+                ) : (
+                  (() => {
+                    const sesionesPorFecha = new Map<string, {id: string; data: any}[]>();
+                    
+                    sesionesSeries.forEach(sesion => {
+                      const fechaKey = new Date(sesion.data.fecha).toDateString();
+                      if (!sesionesPorFecha.has(fechaKey)) {
+                        sesionesPorFecha.set(fechaKey, []);
+                      }
+                      sesionesPorFecha.get(fechaKey)!.push(sesion);
+                    });
+                    
+                    const fechasOrdenadas = Array.from(sesionesPorFecha.keys()).sort(
+                      (a, b) => new Date(b).getTime() - new Date(a).getTime()
+                    );
+                    
+                    return fechasOrdenadas.map(fechaKey => {
+                      const sesionesDia = sesionesPorFecha.get(fechaKey)!;
+                      const fechaObj = new Date(fechaKey);
+                      const esHoy = fechaObj.toDateString() === new Date().toDateString();
+                      
+                      return (
+                        <div key={fechaKey} className="space-y-2">
+                          <div className="flex items-center justify-between bg-purple-100 rounded-lg px-4 py-2">
+                            <div className="flex items-center gap-2">
+                              <Calendar className="w-4 h-4 text-purple-600" />
+                              <span className="font-semibold text-purple-800">
+                                {esHoy ? 'Hoy' : fechaObj.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })}
+                              </span>
+                              <span className="text-sm text-purple-600">
+                                ({sesionesDia.length} serie{sesionesDia.length > 1 ? 's' : ''})
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => descargarPDFSeries(sesionesDia)}
+                              className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm"
+                            >
+                              <Download className="w-4 h-4" />
+                              Descargar PDF
+                            </button>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {sesionesDia.sort((a, b) => b.data.distancia - a.data.distancia).map(sesion => (
+                              <div key={sesion.id} className="bg-purple-50 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <div>
+                                    <p className="font-semibold text-ocean-800">
+                                      {sesion.data.distancia}m
+                                    </p>
+                                    <p className="text-xs text-purple-600">
+                                      Mejor: {formatTime(sesion.data.mejorTiempo)}
+                                    </p>
+                                  </div>
+                                  <button
+                                    onClick={() => eliminarSesionesDelDia(fechaKey)}
+                                    className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-100 rounded-lg"
+                                    title="Eliminar"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                                <div className="flex flex-wrap gap-1">
+                                  {sesion.data.tiempos.map((t: any, idx: number) => (
+                                    <span key={idx} className="px-2 py-1 bg-white rounded text-sm font-mono text-ocean-700">
+                                      {idx + 1}: {formatTime(t.tiempo)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()
+                )}
               </div>
             )}
           </div>

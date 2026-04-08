@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { db } from '@/config/firebase';
 import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
-import { Search, X, Plus, Play, RotateCcw, Square, Flag, Check, AlertCircle, ChevronDown, ChevronUp, Volume2, VolumeX, Settings } from 'lucide-react';
+import { Search, X, Plus, Play, RotateCcw, Square, Flag, Check, AlertCircle, ChevronDown, ChevronUp, Volume2, VolumeX, Settings, Save, Trash2 } from 'lucide-react';
+import { guardarTiempoMMP, guardarSesionSeries } from '@/lib/firebase/tiempos';
 
 interface Cliente {
   id: string;
@@ -166,6 +167,7 @@ export default function CronometroPage() {
   // Drag and drop state
   const [draggedNadador, setDraggedNadador] = useState<NadadorConfig | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<{calle: number; posicion: number} | 'addCalle' | null>(null);
+  const [nadadorSeleccionado, setNadadorSeleccionado] = useState<string | null>(null);
   
   // Configuración de distancia
   const [distancia, setDistancia] = useState<number>(100);
@@ -349,6 +351,42 @@ export default function CronometroPage() {
     setDragOverTarget(null);
   };
 
+  const handleNadadorSelect = (nadador: NadadorConfig) => {
+    if (nadadorSeleccionado === nadador.id) {
+      setNadadorSeleccionado(null);
+    } else {
+      setNadadorSeleccionado(nadador.id);
+    }
+  };
+
+  const handleCellTap = (calle: number, posicion: number) => {
+    if (!nadadorSeleccionado) return;
+    
+    const nadador = nadadores.find(n => n.id === nadadorSeleccionado);
+    if (!nadador) return;
+    
+    if (nadador.calle === calle && nadador.posicion === posicion) {
+      setNadadorSeleccionado(null);
+      return;
+    }
+    
+    const nadadorEnDestino = nadadores.find(n => n.calle === calle && n.posicion === posicion);
+    
+    if (nadadorEnDestino) {
+      setNadadores(prev => prev.map(n => {
+        if (n.id === nadadorSeleccionado) return { ...n, calle, posicion };
+        if (n.id === nadadorEnDestino.id) return { ...n, calle: nadador.calle, posicion: nadador.posicion };
+        return n;
+      }));
+    } else {
+      setNadadores(prev => prev.map(n => 
+        n.id === nadadorSeleccionado ? { ...n, calle, posicion } : n
+      ));
+    }
+    
+    setNadadorSeleccionado(null);
+  };
+
   const addNewPosition = () => {
     const newPos = getMaxPosicion() + 1;
     if (calles === '' || calles < 1) {
@@ -470,30 +508,34 @@ export default function CronometroPage() {
     if (!serieEnCurso) return;
     
     const distanciaReal = serieDistanciaBase === '' ? 50 : serieDistanciaBase;
-    const repeticionesReal = serieRepeticiones === '' ? 4 : serieRepeticiones;
+    const intervaloMs = getIntervalo() * 1000;
+    const now = Date.now();
     
     setCronometroIniciado(true);
     setCronometroGlobalActivo(true);
-    setTiempoGlobalInicio(Date.now());
-    startTimeRef.current = Date.now();
+    setTiempoGlobalInicio(now);
+    startTimeRef.current = now;
     
     const sortedNadadores = [...nadadores].sort((a, b) => a.posicion - b.posicion);
     
-    const initialTimers: TimerState[] = sortedNadadores.map(nadador => ({
-      nadadorId: nadador.id,
-      nombre: nadador.nombre,
-      calle: nadador.calle,
-      posicion: nadador.posicion,
-      distancia: distanciaReal,
-      parciales: 0,
-      distanciaParcial: distanciaReal,
-      estado: 'running',
-      tiempoInicio: Date.now(),
-      tiempoFin: null,
-      laps: [],
-      tiempoActual: 0,
-      countdown: null,
-    }));
+    const initialTimers: TimerState[] = sortedNadadores.map(nadador => {
+      const tiempoHastaSalida = (nadador.posicion - 1) * intervaloMs;
+      return {
+        nadadorId: nadador.id,
+        nombre: nadador.nombre,
+        calle: nadador.calle,
+        posicion: nadador.posicion,
+        distancia: distanciaReal,
+        parciales: 0,
+        distanciaParcial: distanciaReal,
+        estado: 'countdown' as const,
+        tiempoInicio: now + tiempoHastaSalida,
+        tiempoFin: null,
+        laps: [],
+        tiempoActual: 0,
+        countdown: tiempoHastaSalida / 1000,
+      };
+    });
     
     setTimers(initialTimers);
     timersRef.current = initialTimers;
@@ -545,19 +587,31 @@ export default function CronometroPage() {
     if (repeticionActual >= getSerieRepeticiones()) {
       setSerieEnCurso(false);
       setCronometroIniciado(false);
+      setCronometroGlobalActivo(false);
+      setTiempoGlobalInicio(null);
       setActiveTab('resultados');
       return;
     }
     
     setRepeticionActual(prev => prev + 1);
     setCronometroIniciado(false);
-    setTimers(prev => prev.map(t => ({
-      ...t,
-      estado: 'pending' as const,
-      tiempoInicio: null,
-      tiempoFin: null,
-      tiempoActual: 0,
-    })));
+    setCronometroGlobalActivo(false);
+    setTiempoGlobalInicio(null);
+    
+    const intervaloMs = getIntervalo() * 1000;
+    const now = Date.now();
+    
+    setTimers(prev => prev.map(timer => {
+      const tiempoHastaSalida = (timer.posicion - 1) * intervaloMs;
+      return {
+        ...timer,
+        estado: 'countdown' as const,
+        tiempoInicio: now + tiempoHastaSalida,
+        tiempoFin: null,
+        tiempoActual: 0,
+        countdown: tiempoHastaSalida / 1000,
+      };
+    }));
   };
 
   const reiniciarSeries = () => {
@@ -568,6 +622,8 @@ export default function CronometroPage() {
     setTiemposRegistrados(tiemposIniciales);
     setRepeticionActual(1);
     setCronometroIniciado(false);
+    setCronometroGlobalActivo(false);
+    setTiempoGlobalInicio(null);
     setTimers([]);
   };
 
@@ -691,13 +747,37 @@ export default function CronometroPage() {
     if (!cronometroIniciado || cronometroModo !== 'series') return;
     
     const interval = setInterval(() => {
+      const now = Date.now();
+      
       setTimers(prev => prev.map(timer => {
+        // Manejar countdown
+        if (timer.estado === 'countdown' && timer.tiempoInicio) {
+          const tiempoRestante = timer.tiempoInicio - now;
+          
+          if (tiempoRestante <= 0) {
+            // Cambio de countdown a running
+            return {
+              ...timer,
+              estado: 'running' as const,
+              tiempoInicio: now,
+              countdown: null,
+            };
+          }
+          
+          return {
+            ...timer,
+            countdown: Math.ceil(tiempoRestante / 1000),
+          };
+        }
+        
+        // Manejar running
         if (timer.estado === 'running' && timer.tiempoInicio) {
           return {
             ...timer,
-            tiempoActual: Date.now() - timer.tiempoInicio,
+            tiempoActual: now - timer.tiempoInicio,
           };
         }
+        
         return timer;
       }));
     }, 10);
@@ -758,11 +838,63 @@ export default function CronometroPage() {
 
   const todosFinalizados = timers.length > 0 && timers.every(t => t.estado === 'finished' || t.estado === 'dnf');
 
+  const [resultadosGuardados, setResultadosGuardados] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+
+  const guardarResultadosMMP = async () => {
+    if (guardando || cronometroModo !== 'mmp') return;
+    
+    setGuardando(true);
+    try {
+      for (const timer of timers) {
+        if (timer.estado === 'finished') {
+          const nadador = nadadores.find(n => n.id === timer.nadadorId);
+          if (nadador && timer.tiempoActual > 0) {
+            await guardarTiempoMMP(nadador.clienteId, distancia, timer.tiempoActual);
+          }
+        }
+      }
+      setResultadosGuardados(true);
+    } catch (error) {
+      console.error('Error guardando resultados MMP:', error);
+      alert('Error al guardar resultados');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const guardarResultadosSeries = async () => {
+    if (guardando || cronometroModo !== 'series') return;
+    
+    setGuardando(true);
+    try {
+      for (const nadador of nadadores) {
+        const tiempos = tiemposRegistrados.get(nadador.id);
+        if (tiempos && tiempos.some(t => t !== null)) {
+          const tiemposValidos = tiempos
+            .map((t, idx) => t !== null ? { repeticion: idx + 1, tiempo: t, fecha: new Date() } : null)
+            .filter(t => t !== null);
+          
+          if (tiemposValidos.length > 0) {
+            await guardarSesionSeries(nadador.clienteId, getSerieDistancia(), tiemposValidos);
+          }
+        }
+      }
+      setResultadosGuardados(true);
+    } catch (error) {
+      console.error('Error guardando resultados series:', error);
+      alert('Error al guardar resultados');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
   const nuevaSerie = () => {
     setTimers([]);
     timersRef.current = [];
     setTimersIniciados(false);
     setActiveTab('configurar');
+    setResultadosGuardados(false);
   };
 
   const reiniciarSerie = () => {
@@ -1198,45 +1330,62 @@ export default function CronometroPage() {
                           </button>
                         )}
                       </div>
-                      {Array.from({ length: Math.max(6, maxPosicion) }, (_, idx) => idx + 1).map(pos => {
-                        const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
-                        const isDragOver = dragOverTarget && typeof dragOverTarget !== 'string' && dragOverTarget.calle === calleNum && dragOverTarget.posicion === pos;
-                        const isDragging = draggedNadador?.id === nadador?.id;
-                        
-                        return (
-                          <div 
-                            key={pos} 
-                            className={`flex-1 px-1 transition-colors ${isDragOver ? 'bg-ocean-200' : ''}`}
-                            onDragOver={(e) => handleDragOver(e, calleNum, pos)}
-                            onDragLeave={handleDragLeave}
-                            onDrop={(e) => handleDrop(e, calleNum, pos)}
-                          >
-                            {nadador ? (
-                              <div 
-                                draggable
-                                onDragStart={(e) => handleDragStart(e, nadador)}
-                                onDragEnd={handleDragEnd}
-                                className={`bg-ocean-100 rounded-lg p-2 flex items-center justify-between cursor-move ${isDragging ? 'opacity-50' : ''}`}
-                              >
-                                <span className="text-sm font-medium text-ocean-800 truncate">{nadador.nombre}</span>
-                                <button
-                                  onClick={() => removeNadador(nadador.id)}
-                                  className="text-ocean-400 hover:text-red-500"
+                        {Array.from({ length: Math.max(6, maxPosicion) }, (_, idx) => idx + 1).map(pos => {
+                          const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
+                          const isDragOver = dragOverTarget && typeof dragOverTarget !== 'string' && dragOverTarget.calle === calleNum && dragOverTarget.posicion === pos;
+                          const isDragging = draggedNadador?.id === nadador?.id;
+                          const isSelected = nadadorSeleccionado === nadador?.id;
+                          const isTargetCell = nadadorSeleccionado && !nadador;
+                          
+                          return (
+                            <div 
+                              key={pos} 
+                              className={`flex-1 px-1 transition-colors ${isDragOver ? 'bg-ocean-200' : ''} ${isTargetCell ? 'bg-green-100 border-2 border-green-400' : ''}`}
+                              onDragOver={(e) => handleDragOver(e, calleNum, pos)}
+                              onDragLeave={handleDragLeave}
+                              onDrop={(e) => handleDrop(e, calleNum, pos)}
+                              onClick={() => handleCellTap(calleNum, pos)}
+                            >
+                              {nadador ? (
+                                <div 
+                                  draggable
+                                  onDragStart={(e) => handleDragStart(e, nadador)}
+                                  onDragEnd={handleDragEnd}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleNadadorSelect(nadador);
+                                  }}
+                                  className={`bg-ocean-100 rounded-lg p-2 flex items-center justify-between cursor-move ${isDragging ? 'opacity-50' : ''} ${isSelected ? 'ring-2 ring-green-500 ring-offset-2' : ''}`}
                                 >
-                                  <X className="w-4 h-4" />
+                                  <span className="text-sm font-medium text-ocean-800 truncate">{nadador.nombre}</span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeNadador(nadador.id);
+                                    }}
+                                    className="text-ocean-400 hover:text-red-500"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (nadadorSeleccionado) {
+                                      handleCellTap(calleNum, pos);
+                                    } else {
+                                      setShowNadadorSelector({ calle: calleNum, posicion: pos });
+                                    }
+                                  }}
+                                  className="w-full p-2 border-2 border-dashed border-ocean-200 rounded-lg text-ocean-400 hover:border-ocean-400 hover:text-ocean-600 text-sm"
+                                >
+                                  {nadadorSeleccionado ? '📍 Soltar aquí' : '+ Añadir'}
                                 </button>
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => setShowNadadorSelector({ calle: calleNum, posicion: pos })}
-                                className="w-full p-2 border-2 border-dashed border-ocean-200 rounded-lg text-ocean-400 hover:border-ocean-400 hover:text-ocean-600 text-sm"
-                              >
-                                + Añadir
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
+                              )}
+                            </div>
+                          );
+                        })}
                     </div>
                   ))
                 )}
@@ -1344,25 +1493,35 @@ export default function CronometroPage() {
                           const nadador = nadadores.find(n => n.calle === calleNum && n.posicion === pos);
                           const isDragOver = dragOverTarget && typeof dragOverTarget !== 'string' && dragOverTarget.calle === calleNum && dragOverTarget.posicion === pos;
                           const isDragging = draggedNadador?.id === nadador?.id;
+                          const isSelected = nadadorSeleccionado === nadador?.id;
+                          const isTargetCell = nadadorSeleccionado && !nadador;
                           
                           return (
                             <div 
                               key={pos} 
-                              className={`flex-1 px-1 transition-colors ${isDragOver ? 'bg-purple-200' : ''}`}
+                              className={`flex-1 px-1 transition-colors ${isDragOver ? 'bg-purple-200' : ''} ${isTargetCell ? 'bg-green-100 border-2 border-green-400' : ''}`}
                               onDragOver={(e) => handleDragOver(e, calleNum, pos)}
                               onDragLeave={handleDragLeave}
                               onDrop={(e) => handleDrop(e, calleNum, pos)}
+                              onClick={() => handleCellTap(calleNum, pos)}
                             >
                               {nadador ? (
                                 <div 
                                   draggable
                                   onDragStart={(e) => handleDragStart(e, nadador)}
                                   onDragEnd={handleDragEnd}
-                                  className={`bg-purple-100 rounded-lg p-2 flex items-center justify-between cursor-move ${isDragging ? 'opacity-50' : ''}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleNadadorSelect(nadador);
+                                  }}
+                                  className={`bg-purple-100 rounded-lg p-2 flex items-center justify-between cursor-move ${isDragging ? 'opacity-50' : ''} ${isSelected ? 'ring-2 ring-green-500 ring-offset-2' : ''}`}
                                 >
                                   <span className="text-sm font-medium text-purple-800 truncate">{nadador.nombre}</span>
                                   <button
-                                    onClick={() => removeNadador(nadador.id)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeNadador(nadador.id);
+                                    }}
                                     className="text-purple-400 hover:text-red-500"
                                   >
                                     <X className="w-4 h-4" />
@@ -1370,10 +1529,17 @@ export default function CronometroPage() {
                                 </div>
                               ) : (
                                 <button
-                                  onClick={() => setShowNadadorSelector({ calle: calleNum, posicion: pos })}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (nadadorSeleccionado) {
+                                      handleCellTap(calleNum, pos);
+                                    } else {
+                                      setShowNadadorSelector({ calle: calleNum, posicion: pos });
+                                    }
+                                  }}
                                   className="w-full p-2 border-2 border-dashed border-purple-200 rounded-lg text-purple-400 hover:border-purple-400 hover:text-purple-600 text-sm"
                                 >
-                                  + Añadir
+                                  {nadadorSeleccionado ? '📍 Soltar aquí' : '+ Añadir'}
                                 </button>
                               )}
                             </div>
@@ -1644,11 +1810,11 @@ export default function CronometroPage() {
           )}
 
           {/* Cronómetro global */}
-          {cronometroIniciado && serieEnCurso && timers.length > 0 && timers[0]?.tiempoInicio && (
+          {cronometroGlobalActivo && tiempoGlobalInicio && (
             <div className="bg-white rounded-xl shadow-sm p-6 text-center">
-              <div className="text-sm text-ocean-500 mb-1">Tiempo actual</div>
+              <div className="text-sm text-ocean-500 mb-1">Tiempo global</div>
               <div className="text-6xl font-bold font-mono text-ocean-800">
-                {formatTime(timers[0]?.tiempoActual || 0)}
+                {formatTime(Date.now() - tiempoGlobalInicio)}
               </div>
               <div className="text-sm text-purple-600 mt-2">
                 Límite: {serieTiempo}
@@ -1690,25 +1856,29 @@ export default function CronometroPage() {
                       <h3 className="font-semibold text-ocean-800">{timer.nombre}</h3>
                       <p className="text-xs text-ocean-500">Calle {timer.calle}</p>
                     </div>
-                    <div className={`text-3xl font-bold font-mono ${
-                      timer.estado === 'running' 
-                        ? 'text-blue-600'
-                        : timer.estado === 'finished'
-                        ? 'text-green-600'
-                        : 'text-gray-400'
-                    }`}>
-                      {timer.estado === 'pending' 
-                        ? '--:--' 
-                        : formatTime(timer.tiempoActual)}
-                    </div>
+                  <div className={`text-3xl font-bold font-mono ${
+                    timer.estado === 'running' 
+                      ? 'text-blue-600'
+                      : timer.estado === 'finished'
+                      ? 'text-green-600'
+                      : timer.estado === 'countdown'
+                      ? 'text-yellow-600'
+                      : 'text-gray-400'
+                  }`}>
+                    {timer.estado === 'pending' 
+                      ? '--:--' 
+                      : timer.estado === 'countdown'
+                      ? `${timer.countdown}s`
+                      : formatTime(timer.tiempoActual)}
+                  </div>
                   </div>
                   
-                  {timer.estado === 'running' && (
+                  {(timer.estado === 'running' || timer.estado === 'countdown') && (
                     <button
                       onClick={() => registrarTiempoSeries(timer.nadadorId)}
                       className="w-full py-3 bg-green-600 text-white rounded-lg font-bold active:scale-95"
                     >
-                      REGISTRAR
+                      {timer.estado === 'countdown' ? 'ESPERAR' : 'REGISTRAR'}
                     </button>
                   )}
                   
@@ -1757,6 +1927,22 @@ export default function CronometroPage() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-ocean-800 text-lg">Resultados Finales</h2>
               <div className="flex gap-2">
+                {!resultadosGuardados && (
+                  <button
+                    onClick={guardarResultadosMMP}
+                    disabled={guardando}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    {guardando ? 'Guardando...' : 'Guardar'}
+                  </button>
+                )}
+                {resultadosGuardados && (
+                  <span className="flex items-center gap-2 px-4 py-2 bg-green-100 text-green-700 rounded-lg">
+                    <Check className="w-4 h-4" />
+                    Guardado
+                  </span>
+                )}
                 <button
                   onClick={nuevaSerie}
                   className="flex items-center gap-2 px-4 py-2 bg-ocean-600 text-white rounded-lg hover:bg-ocean-700"
@@ -1866,13 +2052,31 @@ export default function CronometroPage() {
           <div className="bg-white rounded-xl shadow-sm p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-ocean-800 text-lg">Resultados - Series Progresivas</h2>
-              <button
-                onClick={reiniciarSeries}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
-              >
-                <RotateCcw className="w-4 h-4" />
-                Nueva Serie
-              </button>
+              <div className="flex gap-2">
+                {!resultadosGuardados && (
+                  <button
+                    onClick={guardarResultadosSeries}
+                    disabled={guardando}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    {guardando ? 'Guardando...' : 'Guardar'}
+                  </button>
+                )}
+                {resultadosGuardados && (
+                  <span className="flex items-center gap-2 px-4 py-2 bg-green-100 text-green-700 rounded-lg">
+                    <Check className="w-4 h-4" />
+                    Guardado
+                  </span>
+                )}
+                <button
+                  onClick={reiniciarSeries}
+                  className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Nueva Serie
+                </button>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
