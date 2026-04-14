@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
@@ -17,7 +17,7 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { Users, UserPlus, Plus, Search, Edit, Trash2, X, Eye, Send, Loader2, ChevronLeft, ChevronRight, DollarSign, Clock, Trophy, FileText, Download, Flame, Calendar } from 'lucide-react';
-import { getAllTiemposMMP, getSesionesSeriesConId, eliminarSesionSeries } from '@/lib/firebase/tiempos';
+import { getAllTiemposMMP, getSesionesSeriesConId, eliminarSesionSeries, guardarTiempoMMP } from '@/lib/firebase/tiempos';
 import { generateSeriesPDF } from '@/lib/generateSeriesPDF';
 
 interface Cliente {
@@ -107,6 +107,11 @@ export default function EntrenadorClientesPage() {
   const [tiemposMMP, setTiemposMMP] = useState<Map<number, any[]>>(new Map());
   const [sesionesSeries, setSesionesSeries] = useState<{id: string; data: any}[]>([]);
   const [tiemposActiveTab, setTiemposActiveTab] = useState<'mmp' | 'series'>('mmp');
+  const [showAgregarTiempoMMP, setShowAgregarTiempoMMP] = useState(false);
+  const [agregarDistancia, setAgregarDistancia] = useState(50);
+  const [agregarTiempo, setAgregarTiempo] = useState('00:00.00');
+  const [agregarFecha, setAgregarFecha] = useState(new Date().toISOString().split('T')[0]);
+  const [guardandoTiempoMMP, setGuardandoTiempoMMP] = useState(false);
   const [eliminandoSesion, setEliminandoSesion] = useState<string | null>(null);
   
   // Estados para cobros
@@ -317,7 +322,7 @@ export default function EntrenadorClientesPage() {
     }
   };
 
-  const updateClienteGrupo = async (clienteId: string, grupoId: string) => {
+  const updateClienteGrupo = async (clienteId: string, grupoId: string | null) => {
     try {
       // Obtener el cliente actual para saber su grupo anterior
       const clienteActual = clientes.find(c => c.id === clienteId);
@@ -439,6 +444,51 @@ setEditingGrupo(null);
       setTiemposCargando(false);
     }
   };
+
+
+
+  const handleAgregarTiempoMMP = async () => {
+    if (!verTiemposCliente || guardandoTiempoMMP) return;
+    
+    const parts = agregarTiempo.split(':');
+    let tiempoMs = 0;
+    if (parts.length === 2) {
+      const minutes = parseInt(parts[0]) || 0;
+      const secondsParts = parts[1].split('.');
+      const seconds = parseInt(secondsParts[0]) || 0;
+      const centiseconds = secondsParts[1] ? parseInt(secondsParts[1].padEnd(2, '0').slice(0, 2)) : 0;
+      tiempoMs = minutes * 60 * 1000 + seconds * 1000 + centiseconds * 10;
+    } else if (parts.length === 1) {
+      const secondsParts = parts[0].split('.');
+      const seconds = parseInt(secondsParts[0]) || 0;
+      const centiseconds = secondsParts[1] ? parseInt(secondsParts[1].padEnd(2, '0').slice(0, 2)) : 0;
+      tiempoMs = seconds * 1000 + centiseconds * 10;
+    }
+    
+    if (tiempoMs <= 0) {
+      alert('Ingresa un tiempo vÃ¡lido');
+      return;
+    }
+
+    setGuardandoTiempoMMP(true);
+    try {
+      const fecha = new Date(agregarFecha);
+      await guardarTiempoMMP(verTiemposCliente.id, agregarDistancia, tiempoMs, fecha);
+      
+      const mmpData = await getAllTiemposMMP(verTiemposCliente.id);
+      setTiemposMMP(mmpData);
+      
+      setShowAgregarTiempoMMP(false);
+      setAgregarTiempo('00:00.00');
+      setAgregarFecha(new Date().toISOString().split('T')[0]);
+    } catch (error) {
+      console.error('Error guardando tiempo MMP:', error);
+      alert('Error al guardar el tiempo');
+    } finally {
+      setGuardandoTiempoMMP(false);
+    }
+  };
+
 
   const eliminarSesion = async (sesionId: string) => {
     if (!verTiemposCliente) return;
@@ -1287,10 +1337,11 @@ setEditingGrupo(null);
                 <label className="block text-sm font-medium text-ocean-700 mb-2">Grupo</label>
                 <select
                   value={editingCliente?.grupoId || ''}
-                  onChange={async (e) => {
+                  onChange={(e) => {
+                    const nuevoGrupoId = e.target.value || '';
+                    setEditingCliente(prev => prev ? { ...prev, grupoId: e.target.value || null } : null);
                     if (editingCliente) {
-                      await updateClienteGrupo(editingCliente.id, e.target.value);
-                      setEditingCliente({ ...editingCliente, grupoId: e.target.value || null });
+                      updateClienteGrupo(editingCliente.id, nuevoGrupoId);
                     }
                   }}
                   className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
@@ -1494,12 +1545,21 @@ setEditingGrupo(null);
               <h2 className="text-lg font-semibold text-ocean-800">
                 Tiempos de {verTiemposCliente.nombre} {verTiemposCliente.apellido?.split(' ')[0] || ''}
               </h2>
-              <button
-                onClick={() => setVerTiemposCliente(null)}
-                className="p-2 text-ocean-400 hover:text-ocean-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowAgregarTiempoMMP(true)}
+                  className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  <Plus className="w-4 h-4" />
+                  Agregar Tiempo
+                </button>
+                <button
+                  onClick={() => setVerTiemposCliente(null)}
+                  className="p-2 text-ocean-400 hover:text-ocean-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             
             {/* Tabs */}
@@ -1657,6 +1717,63 @@ setEditingGrupo(null);
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Agregar Tiempo MMP Modal */}
+      {showAgregarTiempoMMP && verTiemposCliente && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-ocean-800">Agregar Tiempo MMP</h2>
+              <button
+                onClick={() => setShowAgregarTiempoMMP(false)}
+                className="p-2 text-ocean-400 hover:text-ocean-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Distancia</label>
+                <select
+                  value={agregarDistancia}
+                  onChange={(e) => setAgregarDistancia(parseInt(e.target.value))}
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                >
+                  {[25, 50, 100, 200, 400, 800, 1500].map(d => (
+                    <option key={d} value={d}>{d}m</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Tiempo (mm:ss.xx)</label>
+                <input
+                  type="text"
+                  value={agregarTiempo}
+                  onChange={(e) => setAgregarTiempo(e.target.value)}
+                  placeholder="00:00.00"
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ocean-700 mb-2">Fecha</label>
+                <input
+                  type="date"
+                  value={agregarFecha}
+                  onChange={(e) => setAgregarFecha(e.target.value)}
+                  className="w-full px-4 py-3 border border-ocean-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-ocean-500"
+                />
+              </div>
+              <button
+                onClick={handleAgregarTiempoMMP}
+                disabled={guardandoTiempoMMP}
+                className="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                {guardandoTiempoMMP ? 'Guardando...' : 'Guardar Tiempo'}
+              </button>
+            </div>
           </div>
         </div>
       )}

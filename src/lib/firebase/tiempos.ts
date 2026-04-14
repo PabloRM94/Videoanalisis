@@ -37,7 +37,8 @@ export interface SesionSeries {
 export const guardarTiempoMMP = async (
   clienteId: string,
   distancia: number,
-  tiempo: number
+  tiempo: number,
+  fecha?: Date
 ): Promise<void> => {
   try {
     const tiemposRef = doc(db, 'clienteTiempos', clienteId, 'tiemposMMP', distancia.toString());
@@ -59,8 +60,10 @@ export const guardarTiempoMMP = async (
       }
     }
     
+    const fechaIngresada = fecha || new Date();
+    
     historial.push({
-      fecha: new Date(),
+      fecha: fechaIngresada,
       tiempo,
       tipo: 'mmp'
     });
@@ -231,6 +234,35 @@ export const getSesionesSeriesConId = async (clienteId: string): Promise<{id: st
     return sesiones;
   } catch (error) {
     console.error('Error obteniendo sesiones series:', error);
+    return [];
+  }
+};
+
+export const getSesionesSeriesCliente = async (clienteId: string): Promise<SesionSeries[]> => {
+  try {
+    const sesionRef = collection(db, 'clienteSeries', clienteId, 'sesiones');
+    const q = query(sesionRef, orderBy('fecha', 'desc'));
+    const snapshot = await getDocs(sesionRef);
+    
+    const sesiones: SesionSeries[] = [];
+    
+    for (const docSnap of snapshot.docs) {
+      const data = docSnap.data();
+      
+      sesiones.push({
+        fecha: data.fecha instanceof Timestamp ? data.fecha.toDate() : data.fecha,
+        distancia: data.distancia,
+        tiempos: (data.tiempos || []).map((t: any) => ({
+          ...t,
+          fecha: t.fecha instanceof Timestamp ? t.fecha.toDate() : t.fecha
+        })),
+        mejorTiempo: data.mejorTiempo
+      });
+    }
+    
+    return sesiones;
+  } catch (error) {
+    console.error('Error obteniendo sesiones series cliente:', error);
     return [];
   }
 };

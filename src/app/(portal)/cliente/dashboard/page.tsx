@@ -46,32 +46,115 @@ export default function ClienteDashboard() {
         const grupoId = userData?.grupoId;
 
         if (!grupoId) {
-          setWorkouts([]);
+          // Try to get assignments by clienteId if no grupo
+          const asignacionesRef = collection(db, 'asignaciones');
+          const qByCliente = query(
+            asignacionesRef,
+            where('clienteId', '==', user.uid),
+            orderBy('fechaAsignada', 'asc')
+          );
+          const asignacionesSnap = await getDocs(qByCliente);
+          
+          const workoutsData: Workout[] = [];
+          for (const asignacion of asignacionesSnap.docs) {
+            const asignacionData = asignacion.data();
+            const workoutDoc = await getDoc(doc(db, 'workouts', asignacionData.workoutId));
+            if (workoutDoc.exists()) {
+              const workoutData = workoutDoc.data();
+              const tareas: Tarea[] = [];
+              for (const tareaId of workoutData.tareaIds || []) {
+                const tareaDoc = await getDoc(doc(db, 'tareas', tareaId));
+                if (tareaDoc.exists()) {
+                  tareas.push({ id: tareaDoc.id, ...tareaDoc.data() } as Tarea);
+                }
+              }
+              workoutsData.push({
+                id: workoutDoc.id,
+                titulo: workoutData.titulo,
+                fecha: workoutData.fecha,
+                objetivo: workoutData.objetivo,
+                material: workoutData.material,
+                metros: workoutData.metros,
+                tareas,
+                estado: asignacionData.estado || 'pendiente',
+                fechaRealizado: asignacionData.fechaRealizado,
+                fechaReprogramado: asignacionData.fechaReprogramado,
+              });
+            }
+          }
+          setWorkouts(workoutsData);
           setLoading(false);
           return;
         }
 
-        // Fetch assignments for this group
+        // Fetch assignments for this group OR by clienteId
         const asignacionesRef = collection(db, 'asignaciones');
-        const q = query(
+        const qByGrupo = query(
           asignacionesRef,
           where('grupoId', '==', grupoId),
           orderBy('fechaAsignada', 'asc')
         );
 
-        const asignacionesSnap = await getDocs(q);
+        const asignacionesSnap = await getDocs(qByGrupo);
+        
+        // Also fetch direct assignments to this cliente
+        const qByCliente = query(
+          asignacionesRef,
+          where('clienteId', '==', user.uid)
+        );
+        const asignacionesPorClienteSnap = await getDocs(qByCliente);
         
         const workoutsData: Workout[] = [];
+        const workoutIdsProcesados = new Set<string>();
 
         for (const asignacion of asignacionesSnap.docs) {
           const asignacionData = asignacion.data();
+          const workoutId = asignacionData.workoutId;
+          
+          if (workoutIdsProcesados.has(workoutId)) continue;
+          workoutIdsProcesados.add(workoutId);
           
           // Fetch workout details
-          const workoutDoc = await getDoc(doc(db, 'workouts', asignacionData.workoutId));
+          const workoutDoc = await getDoc(doc(db, 'workouts', workoutId));
           if (workoutDoc.exists()) {
             const workoutData = workoutDoc.data();
             
             // Fetch tareas
+            const tareas: Tarea[] = [];
+            for (const tareaId of workoutData.tareaIds || []) {
+              const tareaDoc = await getDoc(doc(db, 'tareas', tareaId));
+              if (tareaDoc.exists()) {
+                tareas.push({ id: tareaDoc.id, ...tareaDoc.data() } as Tarea);
+              }
+            }
+
+            workoutsData.push({
+              id: workoutDoc.id,
+              titulo: workoutData.titulo,
+              fecha: workoutData.fecha,
+              objetivo: workoutData.objetivo,
+              material: workoutData.material,
+              metros: workoutData.metros,
+              tareas,
+              estado: asignacionData.estado || 'pendiente',
+              fechaRealizado: asignacionData.fechaRealizado,
+              fechaReprogramado: asignacionData.fechaReprogramado,
+            });
+          }
+        }
+        
+        // Process direct assignments to cliente
+        for (const asignacion of asignacionesPorClienteSnap.docs) {
+          const asignacionData = asignacion.data();
+          const workoutId = asignacionData.workoutId;
+          
+          if (workoutIdsProcesados.has(workoutId)) continue;
+          workoutIdsProcesados.add(workoutId);
+          
+          const workoutDoc = await getDoc(doc(db, 'workouts', workoutId));
+          if (workoutDoc.exists()) {
+            const workoutData = workoutDoc.data();
+            
             const tareas: Tarea[] = [];
             for (const tareaId of workoutData.tareaIds || []) {
               const tareaDoc = await getDoc(doc(db, 'tareas', tareaId));

@@ -18,6 +18,8 @@ import {
 
 const clienteNavItems = [
   { href: '/cliente/dashboard', label: 'Inicio', icon: LayoutDashboard },
+  { href: '/cliente/cronometro', label: 'Cronómetro', icon: Timer },
+  { href: '/cliente/tiempos', label: 'Tiempos', icon: History },
   { href: '/cliente/workouts', label: 'Workouts', icon: Calendar },
   { href: '/cliente/historial', label: 'Historial', icon: History },
 ];
