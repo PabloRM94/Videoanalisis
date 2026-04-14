@@ -5,6 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { getAllTiemposMMP, getSesionesSeriesCliente, TiempoMMP, SesionSeries } from '@/lib/firebase/tiempos';
 import { generateTiemposPDF } from '@/lib/generateTiemposPDF';
 import { Download, Clock, TrendingUp, Calendar, ChevronDown, ChevronUp } from 'lucide-react';
+import { Timestamp } from 'firebase/firestore';
 
 function formatTime(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -12,6 +13,10 @@ function formatTime(ms: number): string {
   const seconds = totalSeconds % 60;
   const centiseconds = Math.floor((ms % 1000) / 10);
   return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+}
+
+function toDate(fecha: Date | Timestamp): Date {
+  return fecha instanceof Date ? fecha : fecha.toDate();
 }
 
 export default function ClienteTiemposPage() {
@@ -77,7 +82,7 @@ export default function ClienteTiemposPage() {
   }
 
   const sortedDistancias = Array.from(tiemposMMP.keys()).sort((a, b) => a - b);
-  const sortedSesiones = [...sesionesSeries].sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+  const sortedSesiones = [...sesionesSeries].sort((a, b) => toDate(b.fecha).getTime() - toDate(a.fecha).getTime());
 
   const totalRegistrosMMP = Array.from(tiemposMMP.values()).reduce((acc, arr) => acc + arr.length, 0);
 
@@ -185,7 +190,7 @@ export default function ClienteTiemposPage() {
               const mejorTiempo = Math.min(...tiempos.map(t => t.tiempo));
               const isExpanded = expandedDistancia === distancia;
               
-              const tiemposOrdenados = [...tiempos].sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
+              const tiemposOrdenados = [...tiempos].sort((a, b) => toDate(a.fecha).getTime() - toDate(b.fecha).getTime());
 
               return (
                 <div key={distancia} className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -227,7 +232,7 @@ export default function ClienteTiemposPage() {
                           return (
                             <div key={idx} className="px-4 py-3 grid grid-cols-3 items-center text-sm">
                               <span className="text-ocean-600">
-                                {t.fecha instanceof Date ? t.fecha.toLocaleDateString('es-ES') : new Date(t.fecha).toLocaleDateString('es-ES')}
+                                {toDate(t.fecha).toLocaleDateString('es-ES')}
                               </span>
                               <span className="text-center font-mono font-semibold text-ocean-800">
                                 {formatTime(t.tiempo)}
@@ -276,9 +281,7 @@ export default function ClienteTiemposPage() {
                 {sortedSesiones.map((sesion, idx) => (
                   <div key={idx} className="px-4 py-3 grid grid-cols-4 items-center text-sm">
                     <span className="text-ocean-600">
-                      {sesion.fecha instanceof Date 
-                        ? sesion.fecha.toLocaleDateString('es-ES') 
-                        : new Date(sesion.fecha).toLocaleDateString('es-ES')}
+                      {toDate(sesion.fecha).toLocaleDateString('es-ES')}
                     </span>
                     <span className="text-center font-semibold text-purple-700">
                       {sesion.distancia}m

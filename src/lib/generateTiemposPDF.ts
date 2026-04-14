@@ -1,7 +1,7 @@
 import { jsPDF } from 'jspdf';
 
 export interface TiempoMMP {
-  fecha: Date;
+  fecha: Date | { toDate?: () => Date };
   tiempo: number;
   tipo: 'mmp';
 }
@@ -9,11 +9,11 @@ export interface TiempoMMP {
 export interface TiempoSerie {
   repeticion: number;
   tiempo: number;
-  fecha: Date;
+  fecha: Date | { toDate?: () => Date };
 }
 
 export interface SesionSeries {
-  fecha: Date;
+  fecha: Date | { toDate?: () => Date };
   distancia: number;
   tiempos: TiempoSerie[];
   mejorTiempo: number;
@@ -41,6 +41,15 @@ function formatTime(ms: number): string {
   const seconds = totalSeconds % 60;
   const centiseconds = Math.floor((ms % 1000) / 10);
   return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+}
+
+function toDate(fecha: unknown): Date {
+  if (fecha instanceof Date) return fecha;
+  if (fecha && typeof fecha === 'object' && 'toDate' in fecha) {
+    const f = fecha as { toDate: () => Date };
+    return f.toDate();
+  }
+  return new Date();
 }
 
 function fillPageBackground(pdf: jsPDF, pageW: number, pageH: number) {
@@ -216,7 +225,7 @@ export async function generateTiemposPDF(
 
       y += 5;
 
-      const tiemposOrdenados = [...tiempos].sort((a, b) => b.fecha.getTime() - a.fecha.getTime()).slice(0, 10);
+      const tiemposOrdenados = [...tiempos].sort((a, b) => toDate(b.fecha).getTime() - toDate(a.fecha).getTime()).slice(0, 10);
 
       tiemposOrdenados.forEach((t, idx) => {
         if (y + 5 > pageH - 20) {
@@ -231,7 +240,7 @@ export async function generateTiemposPDF(
         pdf.setFontSize(8);
         pdf.setFont('helvetica', 'normal');
         pdf.setTextColor(...OCEAN_DARK);
-        pdf.text(t.fecha.toLocaleDateString('es-ES'), MARGIN_X + 2, y + 3);
+        pdf.text(toDate(t.fecha).toLocaleDateString('es-ES'), MARGIN_X + 2, y + 3);
 
         pdf.setTextColor(...OCEAN_BLUE);
         pdf.setFont('helvetica', 'bold');
@@ -295,7 +304,7 @@ export async function generateTiemposPDF(
 
     y += 7;
 
-    const sesionesOrdenadas = [...sesionesSeries].sort((a, b) => b.fecha.getTime() - a.fecha.getTime()).slice(0, 15);
+    const sesionesOrdenadas = [...sesionesSeries].sort((a, b) => toDate(b.fecha).getTime() - toDate(a.fecha).getTime()).slice(0, 15);
 
     sesionesOrdenadas.forEach((sesion, idx) => {
       if (y + 5 > pageH - 20) {
@@ -323,7 +332,7 @@ export async function generateTiemposPDF(
       pdf.setFontSize(8);
       pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(...OCEAN_DARK);
-      pdf.text(sesion.fecha.toLocaleDateString('es-ES'), MARGIN_X + 2, y + 3);
+      pdf.text(toDate(sesion.fecha).toLocaleDateString('es-ES'), MARGIN_X + 2, y + 3);
 
       pdf.setTextColor(...OCEAN_BLUE);
       pdf.setFont('helvetica', 'bold');
